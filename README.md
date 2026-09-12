@@ -22,7 +22,7 @@ Read `AGENTS.md` before development. The installed Next.js documentation is in `
 Use a supported Node.js version for the installed Next.js and Prisma releases, npm, and an accessible PostgreSQL database.
 
 1. Run `npm ci`.
-2. Use `.env.example` as the configuration reference. Keep `DATABASE_URL` in `.env` for the Prisma CLI; put local authentication and email configuration in `.env.local`. Do not commit either file or overwrite an existing database URL. Deployment environments may provide these variables directly.
+2. Use `.env.example` as the configuration reference. The application, Prisma CLI, and bootstrap load `.env.local` before `.env`; the existing database URL can remain in `.env`. Do not commit either file or overwrite an existing database URL. Deployment environments may provide these variables directly.
 3. Set `BETTER_AUTH_URL` to the application origin, such as `http://localhost:3000`, and set a strong, unique `BETTER_AUTH_SECRET`. The existing development workspace has a locally generated secret; a fresh checkout needs its own.
 4. Run `npm run db:generate`, then `npm run db:status`. Review the target database and pending migrations before applying them with `npm run db:migrate`.
 5. Run `npm run admin:bootstrap` in an interactive terminal to establish the first administrator.

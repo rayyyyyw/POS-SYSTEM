@@ -6,6 +6,7 @@ export async function limitSubmission(scope: string, identifier: string, max: nu
   const key = createHash("sha256").update(`${scope}:${identifier}`).digest("hex");
   await transaction(async (tx) => {
     const now = new Date();
+    await tx.submissionLimit.deleteMany({ where: { expiresAt: { lt: new Date(now.getTime() - 86400000) } } });
     const previous = await tx.submissionLimit.findUnique({ where: { key } });
     if (previous && previous.expiresAt > now && previous.count >= max) throw new DomainError("Too many attempts. Please wait before trying again.");
     await tx.submissionLimit.upsert({ where: { key }, create: { key, count: 1, expiresAt: new Date(now.getTime() + seconds * 1000) }, update:

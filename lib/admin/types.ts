@@ -16,6 +16,7 @@ export interface RestaurantDTO {
 export interface MembershipDTO {
   id: string;
   userId: string;
+  updatedAt: string;
   name: string;
   email: string;
   role: "OWNER" | "MANAGER" | "CASHIER";

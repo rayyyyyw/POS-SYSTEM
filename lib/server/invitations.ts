@@ -7,7 +7,6 @@ import { transaction, assertAdmin, audit } from "./transaction";
 import { appUrl, sendEmail } from "./email";
 import { assertInvitation, DomainError } from "@/lib/domain/policies";
 import { invitationInput } from "@/lib/validation/admin";
-import { currentUser } from "./authorization";
 import { limitSubmission } from "./rate-limit";
 
 export const tokenHash = (token: string) => createHash("sha256").update(token).digest("hex");
@@ -66,12 +65,13 @@ export async function revokeInvitation(actorId: string, invitationId: string) {
     await audit(tx, actor, "Invitation revoked", "Access was not granted.", invite.restaurantId);
   });
 }
-export async function acceptInvitation(raw: unknown) {
+// Identity is supplied only by the authenticated server action, never by form input.
+export async function acceptInvitation(raw: unknown, signedIn: { id: string } | null) {
   const input = z.object({ token: z.string().regex(/^[a-f0-9]{64}$/), name: z.string().trim().max(100).optional(), password: z.string().max(128).optional() }).parse(raw);
-  await limitSubmission("accept", input.token, 5, 300);
-  const signedIn = await currentUser();
+  await limitSubmission("accept-global", "all", 200, 60);
   const existingInvite = await db.invitation.findUnique({ where: { tokenHash: tokenHash(input.token) } });
   assertInvitation(existingInvite);
+  await limitSubmission("accept", existingInvite!.id, 5, 300);
   const existing = await db.user.findUnique({ where: { email: existingInvite!.email }, select: { id: true } });
   if (existing && signedIn?.id !== existing.id) throw new DomainError("Sign in with the invited email address before accepting this invitation.");
   if (!existing && signedIn) throw new DomainError("Sign out before creating the invited account.");

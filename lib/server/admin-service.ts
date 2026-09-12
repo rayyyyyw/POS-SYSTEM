@@ -43,12 +43,13 @@ export async function changeRestaurantStatus(actorId: string, raw: unknown) {
   });
 }
 export async function transferOwnership(actorId: string, raw: unknown) {
-  const input = z.object({ restaurantId: id, userId: id }).parse(raw);
+  const input = z.object({ restaurantId: id, userId: id, version: z.coerce.number().int().nonnegative() }).parse(raw);
   await transaction(async (tx) => {
     const actor = await assertAdmin(tx, actorId);
     const restaurant = await tx.restaurant.findUniqueOrThrow({ where: { id: input.restaurantId } });
+    if (restaurant.version !== input.version) throw new DomainError("This restaurant has changed. Reload before transferring ownership.");
     if (restaurant.status === "ARCHIVED") throw new DomainError("Restore the restaurant before transferring ownership.");
-    const target = await tx.restaurantMembership.findUniqueOrThrow({ where: { restaurantId_userId: input }, include: { user: true } });
+    const target = await tx.restaurantMembership.findUniqueOrThrow({ where: { restaurantId_userId: { restaurantId: input.restaurantId, userId: input.userId } }, include: { user: true } });
     if (target.status !== "ACTIVE" || target.user.status !== "ACTIVE" || !target.user.emailVerified) throw new DomainError("Choose an active, verified restaurant member.");
     if (target.role === "OWNER") throw new DomainError("This member already owns the restaurant.");
     await tx.restaurantMembership.updateMany({ where: { restaurantId: input.restaurantId, role: "OWNER" }, data: { role: "MANAGER" } });
@@ -59,12 +60,16 @@ export async function transferOwnership(actorId: string, raw: unknown) {
   });
 }
 export async function updateMembership(actorId: string, raw: unknown) {
-  const input = z.object({ membershipId: id, role: z.enum(["MANAGER", "CASHIER"]), status: z.enum(["ACTIVE", "DISABLED"]) }).parse(raw);
+  const input = z.object({ membershipId: id, expectedUpdatedAt: z.string().datetime(), role: z.enum(["MANAGER", "CASHIER"]), status: z.enum(["ACTIVE", "DISABLED"]) }).parse(raw);
   await transaction(async (tx) => {
     const actor = await assertAdmin(tx, actorId);
     const membership = await tx.restaurantMembership.findUniqueOrThrow({ where: { id: input.membershipId } });
     assertOwnerMutation(membership.role);
-    await tx.restaurantMembership.update({ where: { id: membership.id }, data: { role: input.role, status: input.status } });
+    const result = await tx.restaurantMembership.updateMany({
+      where: { id: membership.id, updatedAt: new Date(input.expectedUpdatedAt) },
+      data: { role: input.role, status: input.status, updatedAt: new Date(Math.max(Date.now(), membership.updatedAt.getTime() + 1)) },
+    });
+    if (!result.count) throw new DomainError("This membership has changed. Reload before saving so newer access changes are preserved.");
     await audit(tx, actor, "Membership updated", `${input.role} membership set to ${input.status.toLowerCase()}.`, membership.restaurantId, membership.userId);
   });
 }

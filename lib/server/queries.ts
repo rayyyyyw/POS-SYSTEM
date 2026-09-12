@@ -11,7 +11,7 @@ function pagination(params: Params) {
   const page = Number.isSafeInteger(value) && value > 0 ? Math.min(value, 100000) : 1;
   return { page, pageSize: 20, skip: (page - 1) * 20 };
 }
-const membershipSelect = { id: true, userId: true, role: true, status: true, user: { select: { name: true, email: true } } } satisfies Prisma.RestaurantMembershipSelect;
+const membershipSelect = { id: true, userId: true, role: true, status: true, updatedAt: true, user: { select: { name: true, email: true } } } satisfies Prisma.RestaurantMembershipSelect;
 const restaurantSelect = {
   id: true, name: true, slug: true, city: true, email: true, phone: true, status: true, version: true, createdAt: true,
   memberships: { where: { role: "OWNER" }, select: { user: { select: { name: true, email: true } } }, take: 1 },
@@ -50,15 +50,15 @@ export async function getRestaurant(id: string) {
     db.invitation.findMany({ where: { restaurantId: id }, select: { id: true, email: true, role: true, status: true, expiresAt: true, deliveryStatus: true }, orderBy: { createdAt: "desc" }, take: 50 }),
     db.auditEvent.findMany({ where: { restaurantId: id }, select: activitySelect, orderBy: { occurredAt: "desc" }, take: 100 }),
   ]);
-  return { ...restaurantDTO(row), memberships: memberships.map(({ user, ...member }) => ({ ...member, ...user })),
+  return { ...restaurantDTO(row), memberships: memberships.map(({ user, updatedAt, ...member }) => ({ ...member, ...user, updatedAt: updatedAt.toISOString() })),
     invitations: invitations.map(i => ({ ...i, expiresAt: i.expiresAt.toISOString() })), activity: activity.map(activityDTO) };
 }
 const userSelect = {
   id: true, name: true, email: true, platformRole: true, status: true, createdAt: true,
-  memberships: { select: { id: true, userId: true, role: true, status: true, restaurantId: true, restaurant: { select: { name: true } } }, orderBy: { createdAt: "asc" }, take: 100 },
+  memberships: { select: { id: true, userId: true, role: true, status: true, updatedAt: true, restaurantId: true, restaurant: { select: { name: true } } }, orderBy: { createdAt: "asc" }, take: 100 },
 } satisfies Prisma.UserSelect;
 function userDTO(row: Prisma.UserGetPayload<{ select: typeof userSelect }>) {
-  return { ...row, createdAt: row.createdAt.toISOString(), memberships: row.memberships.map(({ restaurant, ...m }) => ({ ...m, name: row.name, email: row.email, restaurantName: restaurant.name })) };
+  return { ...row, createdAt: row.createdAt.toISOString(), memberships: row.memberships.map(({ restaurant, updatedAt, ...m }) => ({ ...m, updatedAt: updatedAt.toISOString(), name: row.name, email: row.email, restaurantName: restaurant.name })) };
 }
 export async function listUsers(params: Params = {}) {
   await requireAdmin();
