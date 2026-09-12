@@ -113,6 +113,14 @@ const statusStyles: Record<string, string> = {
   ARCHIVED: "bg-muted text-muted-foreground",
   INVITED: "bg-info-muted text-info",
   DISABLED: "bg-muted text-muted-foreground",
+  NEW: "bg-info-muted text-info",
+  REVIEWED: "bg-success-muted text-success",
+  CLOSED: "bg-muted text-muted-foreground",
+  ACCEPTED: "bg-success-muted text-success",
+  REVOKED: "bg-muted text-muted-foreground",
+  SENT: "bg-success-muted text-success",
+  FAILED: "bg-destructive-muted text-destructive",
+  EXPIRED: "bg-warning-muted text-warning",
 };
 
 export function StatusBadge({ status }: { status: string }) {

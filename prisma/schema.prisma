@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider = "prisma-client"
+  output   = "../generated/prisma"
 }
 
 datasource db {
@@ -10,4 +11,195 @@ model DatabaseConnectionTest {
   id        Int      @id @default(autoincrement())
   message   String
   createdAt DateTime @default(now())
+}
+
+enum PlatformRole {
+  NONE
+  ADMIN
+}
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+enum RestaurantStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+  ARCHIVED
+}
+enum MemberRole {
+  OWNER
+  MANAGER
+  CASHIER
+}
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+}
+enum DeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+}
+enum RequestStatus {
+  NEW
+  REVIEWED
+  CLOSED
+}
+
+model User {
+  id            String       @id
+  name          String
+  email         String       @unique
+  emailVerified Boolean      @default(false)
+  image         String?
+  platformRole  PlatformRole @default(NONE)
+  status        UserStatus   @default(ACTIVE)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+  memberships   RestaurantMembership[]
+  @@index([status, createdAt])
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@index([userId])
+}
+
+model Account {
+  id                     String   @id
+  accountId              String
+  providerId             String
+  userId                 String
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken            String?
+  refreshToken           String?
+  idToken                String?
+  accessTokenExpiresAt   DateTime?
+  refreshTokenExpiresAt  DateTime?
+  scope                  String?
+  password               String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  @@unique([providerId, accountId])
+  @@index([userId])
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  @@index([identifier])
+}
+
+model RateLimit {
+  id          String @id @default(cuid())
+  key         String @unique
+  count       Int
+  lastRequest BigInt
+}
+
+model Restaurant {
+  id          String           @id @default(cuid())
+  name        String
+  slug        String           @unique
+  city        String           @default("")
+  email       String           @default("")
+  phone       String           @default("")
+  status      RestaurantStatus @default(PENDING)
+  version     Int              @default(0)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  memberships RestaurantMembership[]
+  invitations Invitation[]
+  @@index([status, createdAt, id])
+}
+
+model RestaurantMembership {
+  id           String     @id @default(cuid())
+  restaurantId String
+  userId       String
+  role         MemberRole
+  status       UserStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  @@unique([restaurantId, userId])
+  @@index([userId, status])
+}
+
+model Invitation {
+  id             String           @id @default(cuid())
+  restaurantId   String
+  restaurant     Restaurant       @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  email          String
+  name           String
+  role           MemberRole
+  tokenHash      String           @unique
+  status         InvitationStatus @default(PENDING)
+  deliveryStatus DeliveryStatus   @default(PENDING)
+  expiresAt      DateTime
+  lastSentAt     DateTime?
+  createdAt      DateTime         @default(now())
+  @@index([restaurantId, status])
+  @@index([email, status])
+}
+
+// Actor and target snapshots deliberately survive changes to user/tenant records.
+model AuditEvent {
+  id           String   @id @default(cuid())
+  restaurantId String?
+  userId       String?
+  actorId      String?
+  actor        String
+  title        String
+  detail       String
+  occurredAt   DateTime @default(now())
+  @@index([restaurantId, occurredAt])
+  @@index([userId, occurredAt])
+  @@index([occurredAt])
+}
+
+model PlatformSettings {
+  id           String @id @default("platform")
+  name         String @default("POS System")
+  supportEmail String @default("")
+  timezone     String @default("Asia/Manila")
+  dateFormat   String @default("DMY")
+  version      Int    @default(0)
+}
+
+model AccessRequest {
+  id             String        @id @default(cuid())
+  name           String
+  email          String        @unique
+  restaurantName String
+  city           String
+  status         RequestStatus @default(NEW)
+  consentedAt    DateTime       @default(now())
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  @@index([status, createdAt, id])
+}
+
+model SubmissionLimit {
+  key       String   @id
+  count     Int
+  expiresAt DateTime
+  @@index([expiresAt])
 }

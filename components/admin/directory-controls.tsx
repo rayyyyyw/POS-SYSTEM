@@ -1,80 +1,40 @@
-"use client";
-
+import Link from "next/link";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
+import type { DirectoryParams } from "@/lib/admin/types";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 
-export function DirectorySearch({
-  value,
-  onChange,
-  label,
-  placeholder,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  label: string;
-  placeholder: string;
-}) {
-  return (
-    <div className="relative w-full sm:max-w-sm">
-      <Search
-        className="absolute left-3 top-3 size-4 text-muted-foreground"
-        aria-hidden="true"
-      />
-      <Input
-        type="search"
-        aria-label={label}
-        placeholder={placeholder}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="h-10 bg-card pl-9"
-      />
-    </div>
-  );
+export function paramValue(params: DirectoryParams, key: string) {
+  const value = params[key];
+  return Array.isArray(value) ? value[0] ?? "" : value ?? "";
 }
 
-export function DirectoryPagination({
-  page,
-  pageSize,
-  total,
-  onPageChange,
-}: {
-  page: number;
-  pageSize: number;
-  total: number;
-  onPageChange: (page: number) => void;
+export function DirectorySearch({ value, label, placeholder }: { value: string; label: string; placeholder: string }) {
+  return <div className="relative w-full sm:max-w-sm">
+    <Search className="absolute left-3 top-3 size-4 text-muted-foreground" aria-hidden="true" />
+    <Input type="search" name="q" aria-label={label} placeholder={placeholder} defaultValue={value} maxLength={200} className="h-10 bg-card pl-9" />
+  </div>;
+}
+
+export function DirectoryPagination({ page, pageSize, total, params, path }: {
+  page: number; pageSize: number; total: number; params: DirectoryParams; path: string;
 }) {
   const pages = Math.max(1, Math.ceil(total / pageSize));
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t px-5 py-4">
-      <p role="status" className="text-xs text-muted-foreground">
-        {total === 0
-          ? "0 results"
-          : `Showing ${(page - 1) * pageSize + 1}–${Math.min(page * pageSize, total)} of ${total}`}
-      </p>
-      <nav aria-label="Pagination" className="flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="icon-sm"
-          aria-label="Previous page"
-          disabled={page <= 1}
-          onClick={() => onPageChange(page - 1)}
-        >
-          <ChevronLeft aria-hidden="true" />
-        </Button>
-        <span className="px-2 text-xs text-muted-foreground">
-          Page {page} of {pages}
-        </span>
-        <Button
-          variant="outline"
-          size="icon-sm"
-          aria-label="Next page"
-          disabled={page >= pages}
-          onClick={() => onPageChange(page + 1)}
-        >
-          <ChevronRight aria-hidden="true" />
-        </Button>
-      </nav>
-    </div>
-  );
+  function pageUrl(nextPage: number) {
+    const query = new URLSearchParams();
+    for (const key of Object.keys(params)) {
+      const value = paramValue(params, key);
+      if (value && key !== "page") query.set(key, value);
+    }
+    query.set("page", String(nextPage));
+    return `${path}?${query}`;
+  }
+  return <div className="flex flex-wrap items-center justify-between gap-3 border-t px-5 py-4">
+    <p role="status" className="text-xs text-muted-foreground">{total === 0 ? "0 results" : `Showing ${Math.min((page - 1) * pageSize + 1, total)}–${Math.min(page * pageSize, total)} of ${total}`}</p>
+    <nav aria-label="Pagination" className="flex items-center gap-2">
+      {page > 1 ? <Button asChild variant="outline" size="icon-sm"><Link href={pageUrl(page - 1)} aria-label="Previous page"><ChevronLeft aria-hidden="true" /></Link></Button> : <Button disabled variant="outline" size="icon-sm" aria-label="Previous page"><ChevronLeft aria-hidden="true" /></Button>}
+      <span className="px-2 text-xs text-muted-foreground">Page {page} of {pages}</span>
+      {page < pages ? <Button asChild variant="outline" size="icon-sm"><Link href={pageUrl(page + 1)} aria-label="Next page"><ChevronRight aria-hidden="true" /></Link></Button> : <Button disabled variant="outline" size="icon-sm" aria-label="Next page"><ChevronRight aria-hidden="true" /></Button>}
+    </nav>
+  </div>;
 }

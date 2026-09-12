@@ -1,118 +1,33 @@
+import { DateLabel } from "@/components/admin/date-label";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, ArrowUpRight } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { changeUserStatus, revokeUserSessions, updateUser } from "@/app/actions/admin";
+import { ActionForm, FormField } from "@/components/admin/action-form";
 import { ActivityList } from "@/components/admin/activity-list";
-import {
-  DetailList,
-  IdentityMark,
-  PageHeading,
-  Panel,
-  StatusBadge,
-} from "@/components/admin/page-ui";
-import { getRestaurant, getUser, getUserActivity } from "@/lib/mock-data/admin";
-import { formatDate, labelFor } from "@/lib/admin/format";
+import { DetailList, IdentityMark, PageHeading, Panel, StatusBadge } from "@/components/admin/page-ui";
+import { MembershipEditor } from "@/components/admin/restaurant-management";
+import { getUser } from "@/lib/server/queries";
+import { labelFor } from "@/lib/admin/format";
 
 export const metadata: Metadata = { title: "User details" };
 
-export default async function UserDetailsPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
+export default async function UserDetailsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const user = getUser(id);
+  const user = await getUser(id);
   if (!user) notFound();
-  const restaurant = user.restaurantId
-    ? getRestaurant(user.restaurantId)
-    : null;
-  return (
-    <>
-      <PageHeading
-        title={user.name}
-        description="Individual identity and platform account information."
-        breadcrumbs={[
-          { label: "Users", href: "/admin/users" },
-          { label: user.name },
-        ]}
-        actions={
-          <Button asChild variant="outline">
-            <Link href="/admin/users">
-              <ArrowLeft aria-hidden="true" />
-              All users
-            </Link>
-          </Button>
-        }
-      />
-      <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.5fr)_minmax(280px,1fr)]">
-        <Panel title="User profile">
-          <div className="mb-6 flex items-center gap-4">
-            <IdentityMark name={user.name} large />
-            <div>
-              <p className="font-semibold">{user.name}</p>
-              <Badge variant="outline" className="mt-2 rounded-md font-normal">
-                {labelFor(user.role)}
-              </Badge>
-            </div>
-          </div>
-          <DetailList
-            items={[
-              { label: "Email", value: user.email },
-              {
-                label: "Account status",
-                value: <StatusBadge status={user.status} />,
-              },
-              {
-                label: "User ID",
-                value: <span className="font-mono text-xs">{user.id}</span>,
-              },
-              { label: "Registered", value: formatDate(user.createdAt) },
-            ]}
-          />
-        </Panel>
-        <Panel
-          title="Platform association"
-          description="Context for this user's platform role."
-        >
-          {restaurant ? (
-            <>
-              <div className="mb-5 flex items-center gap-3">
-                <IdentityMark name={restaurant.name} />
-                <div>
-                  <p className="text-sm font-medium">{restaurant.name}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {restaurant.city}
-                  </p>
-                </div>
-              </div>
-              <StatusBadge status={restaurant.status} />
-              <Button asChild variant="outline" className="mt-5 w-full">
-                <Link href={`/admin/restaurants/${restaurant.id}`}>
-                  View restaurant
-                  <ArrowUpRight aria-hidden="true" />
-                </Link>
-              </Button>
-            </>
-          ) : (
-            <p className="text-sm leading-6 text-muted-foreground">
-              Platform administrator. This sample user is not associated with an
-              individual restaurant.
-            </p>
-          )}
-          <p className="mt-5 text-xs leading-5 text-muted-foreground">
-            Roles and statuses are sample labels in this phase. They do not
-            grant or enforce access.
-          </p>
-        </Panel>
+  return <>
+    <PageHeading title={user.name} description="Manage this person's profile, account access, and restaurant memberships." breadcrumbs={[{ label: "Users", href: "/admin/users" }, { label: user.name }]} />
+    <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.7fr)_minmax(300px,1fr)]">
+      <div className="space-y-6">
+        <Panel title="User profile"><div className="mb-6 flex items-center gap-4"><IdentityMark name={user.name} large /><div><p className="font-semibold">{user.name}</p><p className="mt-1 text-xs text-muted-foreground">{user.platformRole === "ADMIN" ? "Platform administrator" : "Restaurant user"}</p></div></div><DetailList items={[{ label: "Login email", value: user.email }, { label: "Account status", value: <StatusBadge status={user.status} /> }, { label: "Registered", value: <DateLabel value={user.createdAt} /> }, { label: "User ID", value: <span className="font-mono text-xs">{user.id}</span> }]} /><div className="mt-6 border-t pt-5"><ActionForm action={updateUser} submitLabel="Save profile"><input type="hidden" name="userId" value={user.id} /><FormField name="name" label="Full name" defaultValue={user.name} required maxLength={100} hint="Changing the display name does not change the login email." /></ActionForm></div></Panel>
+        <Panel title="Restaurant memberships" description="Disabling a membership affects only that restaurant. Up to 100 memberships.">{user.memberships.length ? <div className="divide-y">{user.memberships.map((membership) => <div key={membership.id} className="space-y-4 py-5 first:pt-0 last:pb-0"><div className="flex flex-wrap items-center justify-between gap-3"><div><Link href={`/admin/restaurants/${membership.restaurantId}`} className="text-sm font-medium hover:text-primary hover:underline">{membership.restaurantName}</Link><p className="mt-1 text-xs text-muted-foreground">{labelFor(membership.role)}</p></div><StatusBadge status={membership.status} /></div><MembershipEditor membership={membership} /></div>)}</div> : <p className="text-sm text-muted-foreground">This user has no restaurant memberships.</p>}</Panel>
       </div>
-      <Panel
-        title="Recent account activity"
-        description="Sample account and platform events · Asia/Manila"
-      >
-        <ActivityList events={getUserActivity(id)} />
-      </Panel>
-    </>
-  );
+      <aside className="space-y-6">
+        <Panel title="Global account access" description="Applies across the platform and every restaurant."><ActionForm action={changeUserStatus} submitLabel={user.status === "ACTIVE" ? "Disable account" : "Restore account"} variant={user.status === "ACTIVE" ? "destructive" : "outline"} confirmation={user.status === "ACTIVE" ? "Disable this account everywhere and revoke its active sessions?" : "Restore this person's global account access?"}><input type="hidden" name="userId" value={user.id} /><input type="hidden" name="status" value={user.status === "ACTIVE" ? "DISABLED" : "ACTIVE"} /><p className="text-xs leading-6 text-muted-foreground">An owner of an active restaurant must transfer ownership or have the restaurant suspended first. The last active administrator is protected.</p></ActionForm></Panel>
+        <Panel title="Active sessions" description="Require this person to sign in again on all devices."><ActionForm action={revokeUserSessions} submitLabel="Revoke all sessions" variant="outline" confirmation="Revoke every active session for this person? Revoking your own sessions will sign you out."><input type="hidden" name="userId" value={user.id} /></ActionForm></Panel>
+      </aside>
+    </div>
+    <Panel title="Recent account activity" description="Most recent recorded changes concerning this user."><ActivityList events={user.activity} /></Panel>
+  </>;
 }

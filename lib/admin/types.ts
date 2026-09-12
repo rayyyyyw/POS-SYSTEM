@@ -1,4 +1,66 @@
-// Presentation types for this phase; these are not Prisma models or auth claims.
+// Serializable presentation types. Authorization is always enforced on the server.
+export interface RestaurantDTO {
+  id: string;
+  name: string;
+  slug: string;
+  city: string;
+  email: string;
+  phone: string;
+  status: RestaurantStatus;
+  version: number;
+  createdAt: string;
+  ownerName: string | null;
+  ownerEmail: string | null;
+}
+
+export interface MembershipDTO {
+  id: string;
+  userId: string;
+  name: string;
+  email: string;
+  role: "OWNER" | "MANAGER" | "CASHIER";
+  status: "ACTIVE" | "DISABLED";
+}
+
+export interface InvitationDTO {
+  id: string;
+  email: string;
+  role: "OWNER" | "MANAGER" | "CASHIER";
+  status: "PENDING" | "ACCEPTED" | "REVOKED";
+  expiresAt: string;
+  deliveryStatus: "PENDING" | "SENT" | "FAILED";
+}
+
+export interface ActivityDTO {
+  id: string;
+  title: string;
+  detail: string;
+  actor: string;
+  occurredAt: string;
+  restaurantId: string | null;
+  userId: string | null;
+  tone: "info";
+}
+
+export interface UserDTO {
+  id: string;
+  name: string;
+  email: string;
+  platformRole: "ADMIN" | "NONE";
+  status: "ACTIVE" | "DISABLED";
+  createdAt: string;
+  memberships: (MembershipDTO & { restaurantName: string; restaurantId: string })[];
+}
+
+export type DirectoryParams = Record<string, string | string[] | undefined>;
+
+export interface DirectoryResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export const restaurantStatuses = [
   "ACTIVE",
   "PENDING",
@@ -6,53 +68,3 @@ export const restaurantStatuses = [
   "ARCHIVED",
 ] as const;
 export type RestaurantStatus = (typeof restaurantStatuses)[number];
-export const userRoles = [
-  "SUPER_ADMIN",
-  "RESTAURANT_OWNER",
-  "MANAGER",
-  "CASHIER",
-] as const;
-export type UserRole = (typeof userRoles)[number];
-export type UserStatus = "ACTIVE" | "INVITED" | "DISABLED";
-
-export interface Restaurant {
-  id: string;
-  name: string;
-  slug: string;
-  city: string;
-  email: string;
-  phone: string;
-  ownerId: string;
-  status: RestaurantStatus;
-  createdAt: string;
-}
-
-export interface PlatformUser {
-  id: string;
-  name: string;
-  email: string;
-  role: UserRole;
-  restaurantId: string | null;
-  status: UserStatus;
-  createdAt: string;
-}
-
-export interface ActivityEvent {
-  id: string;
-  restaurantId: string | null;
-  userId: string | null;
-  title: string;
-  detail: string;
-  actor: string;
-  occurredAt: string;
-  tone: "success" | "warning" | "destructive" | "info";
-}
-
-export interface RestaurantListItem extends Restaurant {
-  ownerName: string;
-  ownerEmail: string;
-}
-
-export interface UserListItem extends PlatformUser {
-  restaurantName: string | null;
-}
