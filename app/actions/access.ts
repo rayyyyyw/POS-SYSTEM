@@ -12,7 +12,8 @@ export async function requestAccess(_: ActionState, form: FormData) {
     await limitSubmission("early-access", "global", 100, 3600);
     await limitSubmission("early-access", data.email, 3, 3600);
     // Existing requests remain intact: public submissions cannot overwrite admin-reviewed data.
-    await db.accessRequest.upsert({ where: { email: data.email }, create: data, update: {} });
+    // INSERT ... ON CONFLICT DO NOTHING also handles simultaneous first requests.
+    await db.accessRequest.createMany({ data: [data], skipDuplicates: true });
     return { success: true, message: "Your request is recorded. We'll contact you when onboarding is available." };
   });
 }

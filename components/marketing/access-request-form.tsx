@@ -8,10 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 const fields = [
-  { name: "name", label: "Your name", placeholder: "Full name", autoComplete: "name", maxLength: 120 },
-  { name: "restaurantName", label: "Restaurant name", placeholder: "Your restaurant", autoComplete: "organization", maxLength: 160 },
+  { name: "name", label: "Your name", placeholder: "Full name", autoComplete: "name", maxLength: 100 },
+  { name: "restaurantName", label: "Restaurant name", placeholder: "Your restaurant", autoComplete: "organization", maxLength: 100 },
   { name: "email", label: "Email address", placeholder: "you@restaurant.com", autoComplete: "email", type: "email", maxLength: 254 },
-  { name: "city", label: "City", placeholder: "Where you serve", autoComplete: "address-level2", maxLength: 120 },
+  { name: "city", label: "City", placeholder: "Where you serve", autoComplete: "address-level2", maxLength: 100 },
 ] as const;
 
 export function AccessRequestForm() {
@@ -32,7 +32,7 @@ export function AccessRequestForm() {
   }
 
   return (
-    <form action={formAction} aria-labelledby="access-form-title" className="space-y-5">
+    <form action={formAction} aria-labelledby="access-form-title" aria-busy={pending} className="space-y-5">
       <div className="mb-7">
         <h3 id="access-form-title" className="text-xl font-semibold tracking-tight">Request early access</h3>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">All fields are required. This is an access request, not an account registration.</p>
@@ -50,6 +50,8 @@ export function AccessRequestForm() {
                 autoComplete={field.autoComplete}
                 placeholder={field.placeholder}
                 maxLength={field.maxLength}
+                minLength={field.name === "email" ? undefined : 2}
+                disabled={pending}
                 required
                 value={values[field.name]}
                 onChange={(event) => setValues((previous) => ({ ...previous, [field.name]: event.target.value }))}
@@ -68,7 +70,7 @@ export function AccessRequestForm() {
       </div>
       <div className="pt-1">
         <label htmlFor="access-consent" className="flex cursor-pointer items-start gap-3 text-xs leading-6 text-muted-foreground">
-          <input id="access-consent" type="checkbox" name="consent" required checked={consent} onChange={(event) => setConsent(event.target.checked)} className="mt-1 size-4 shrink-0 accent-primary" aria-invalid={Boolean(state.errors?.consent)} aria-describedby={state.errors?.consent ? "access-consent-error" : undefined} />
+          <input id="access-consent" type="checkbox" name="consent" required disabled={pending} checked={consent} onChange={(event) => setConsent(event.target.checked)} className="mt-1 size-4 shrink-0 accent-primary" aria-invalid={Boolean(state.errors?.consent)} aria-describedby={state.errors?.consent ? "access-consent-error" : undefined} />
           <span>I agree that POS System may use these details to review my request and contact me about early access.</span>
         </label>
         {state.errors?.consent?.[0] && <p id="access-consent-error" className="mt-2 text-xs text-destructive">{state.errors.consent[0]}</p>}

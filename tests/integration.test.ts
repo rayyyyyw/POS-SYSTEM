@@ -1,55 +1,30 @@
-import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { test } from "node:test";
 import { Client } from "pg";
 import type { PrismaClient } from "../generated/prisma/client";
 import { DomainError } from "../lib/domain/policies";
+import { createIsolatedDatabase } from "./support/database";
 
 // Every write, including migration DDL and deliberate failure triggers, stays in
 // this newly created schema. The application's normal schema is never reset.
 test("database services preserve permissions and business invariants", { timeout: 120_000 }, async (t) => {
+  const fixture = await createIsolatedDatabase();
   const originalEnv = {
     DATABASE_URL: process.env.DATABASE_URL,
     RESEND_API_KEY: process.env.RESEND_API_KEY,
     BETTER_AUTH_URL: process.env.BETTER_AUTH_URL,
     BETTER_AUTH_SECRET: process.env.BETTER_AUTH_SECRET,
   };
-  assert.ok(originalEnv.DATABASE_URL, "Configure a development DATABASE_URL before running integration tests.");
-
-  const schema = `pos_test_${randomBytes(12).toString("hex")}`;
+  const schema = fixture.schema;
   const validateSchema = () => assert.match(schema, /^pos_test_[a-f0-9]{24}$/);
   validateSchema();
-  const connectionUrl = new URL(originalEnv.DATABASE_URL);
-  assert.ok(["postgres:", "postgresql:"].includes(connectionUrl.protocol), "Integration tests require a PostgreSQL connection URL.");
-  connectionUrl.searchParams.delete("schema");
-  const setup = new Client({ connectionString: connectionUrl.toString(), connectionTimeoutMillis: 5000 });
-  let schemaCreated = false;
+  const setup = new Client({ connectionString: fixture.url, connectionTimeoutMillis: 5000 });
   let db: PrismaClient | undefined;
 
-  await setup.connect();
   try {
-    await setup.query(`CREATE SCHEMA "${schema}"`);
-    schemaCreated = true;
-    await setup.query(`SET search_path TO "${schema}"`);
-    const currentSchema = await setup.query<{ schema_name: string }>("SELECT current_schema() AS schema_name");
-    assert.equal(currentSchema.rows[0]?.schema_name, schema);
-
-    for (const migration of [
-      "20260911054521_init",
-      "20260912090000_platform_foundation",
-    ]) {
-      const sql = await readFile(resolve("prisma", "migrations", migration, "migration.sql"), "utf8");
-      assert.doesNotMatch(sql, /(?:"?public"?|"?pg_catalog"?)\s*\./i, "Test migrations must not target shared schemas.");
-      await setup.query(sql);
-    }
-
-    const isolatedUrl = new URL(originalEnv.DATABASE_URL);
-    isolatedUrl.searchParams.set("schema", schema);
-    isolatedUrl.searchParams.set("options", `-c search_path=${schema}`);
-    process.env.DATABASE_URL = isolatedUrl.toString();
+    await setup.connect();
+    process.env.DATABASE_URL = fixture.url;
     process.env.RESEND_API_KEY = ""; // These tests must never send an email.
     process.env.BETTER_AUTH_URL = "http://localhost:3000";
     process.env.BETTER_AUTH_SECRET = randomBytes(32).toString("hex");
@@ -117,17 +92,19 @@ test("database services preserve permissions and business invariants", { timeout
       assert.equal(audit.title, "Restaurant created");
     });
 
-    await t.test("non-admin, disabled-admin, and unknown actors cannot call admin services", async () => {
+    await t.test("non-admin, disabled-admin, unverified-admin, and unknown actors cannot call admin services", async () => {
       const member = await createUser("Member");
       const disabledAdmin = await createUser("Disabled administrator", { platformRole: "ADMIN", status: "DISABLED" });
+      const unverifiedAdmin = await createUser("Unverified administrator", { platformRole: "ADMIN", emailVerified: false });
       const before = await database.restaurant.count();
       const audits = await database.auditEvent.count();
-      for (const actorId of [member.id, disabledAdmin.id, randomUUID()]) {
+      for (const actorId of [member.id, disabledAdmin.id, unverifiedAdmin.id, randomUUID()]) {
         await assert.rejects(transaction((tx) => assertAdmin(tx, actorId)), DomainError);
         await assert.rejects(services.createRestaurant(actorId, restaurantInput()), DomainError);
       }
       assert.equal(await database.restaurant.count(), before);
       assert.equal(await database.auditEvent.count(), audits);
+      await database.user.update({ where: { id: unverifiedAdmin.id }, data: { status: "DISABLED" } });
     });
 
     await t.test("concurrent duplicate restaurant submissions produce exactly one restaurant and invitation", async () => {
@@ -266,13 +243,9 @@ test("database services preserve permissions and business invariants", { timeout
       await db?.$disconnect();
     } finally {
       try {
-        if (schemaCreated) {
-          validateSchema();
-          await setup.query("ROLLBACK");
-          await setup.query(`DROP SCHEMA "${schema}" CASCADE`);
-        }
-      } finally {
         await setup.end();
+      } finally {
+        await fixture.cleanup();
         for (const [key, value] of Object.entries(originalEnv)) {
           if (value === undefined) delete process.env[key];
           else process.env[key] = value;

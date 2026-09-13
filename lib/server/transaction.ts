@@ -13,8 +13,8 @@ export async function transaction<T>(work: (tx: Prisma.TransactionClient) => Pro
   throw new DomainError("Another change is in progress. Please try again.");
 }
 export async function assertAdmin(tx: Prisma.TransactionClient, actorId: string) {
-  const actor = await tx.user.findUnique({ where: { id: actorId }, select: { id: true, name: true, status: true, platformRole: true } });
-  if (!actor || actor.status !== "ACTIVE" || actor.platformRole !== "ADMIN") throw new DomainError("Administrator access is required.");
+  const actor = await tx.user.findUnique({ where: { id: actorId }, select: { id: true, name: true, status: true, platformRole: true, emailVerified: true } });
+  if (!actor || actor.status !== "ACTIVE" || actor.platformRole !== "ADMIN" || !actor.emailVerified) throw new DomainError("Administrator access is required.");
   return actor;
 }
 export async function audit(tx: Prisma.TransactionClient, actor: { id: string; name: string }, title: string, detail: string, restaurantId?: string, userId?: string) {

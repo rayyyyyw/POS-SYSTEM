@@ -105,12 +105,21 @@ npm run admin:bootstrap
 npm test
 npm run lint
 npm run build
+npm run test:http
 npm run start
 ```
 
 `db:migrate` applies checked-in migrations using `prisma migrate deploy`; it does not reset the database. `build` regenerates Prisma Client before the Next.js production build. `start` serves the production build. On a fresh checkout, run `npx next typegen` before a separate `npx tsc --noEmit --incremental false` check. An uncached production build may need network access for the existing Google-hosted Geist fonts.
 
 Review the test harness configuration before running integration tests. Database tests must use isolated temporary schemas and must never seed, truncate, or delete records in the application's public schema. Use a dedicated development/test database rather than production credentials.
+
+`npm test` covers database permissions, lifecycle and ownership rules, stale edits, concurrent operations, invitation acceptance/expiry/retries, request validation and conversion, and transaction rollback. The database suites share `tests/support/database.ts`, which loads the same environment precedence as the application and applies migrations only inside a generated `pos_test_*` schema. Each run removes its own schema afterward.
+
+After `npm run build`, run `npm run test:http` to test the compiled application through a disposable local server. It checks login/logout, disabled accounts, session revocation, blocked public signup, unauthorized and cross-origin Server Action requests, tenant membership visibility, restaurant onboarding and lifecycle, persisted landing requests, verification, password recovery, and login rate limits. Forms use the action references from the rendered HTML; the client-hydrated invitation action uses the installed Next/React encoder and current build manifest. Recheck that test adapter when upgrading Next.js.
+
+HTTP tests preload `tests/support/mail-capture.mjs` only into the disposable server. It intercepts Resend requests in memory, permits only `@example.test` recipients, and can simulate failed delivery. It refuses to start without an isolated test schema and explicit test configuration. Nothing is sent to Resend, and the production application has no fake-email fallback or test endpoints. These tests verify application email behavior, not real provider or mailbox delivery.
+
+For manual browser checks, build first and run `node_modules/.bin/tsx tests/serve-fixture.ts` (`node_modules\.bin\tsx.cmd tests/serve-fixture.ts` in PowerShell). This starts a disposable app on `http://127.0.0.1:3100` and prints credentials for temporary QA accounts. Type `stop` in that terminal to stop the server and remove its schema. Do not use these fixture credentials for your real administrator account.
 
 ## Rollout and remaining work
 
