@@ -183,9 +183,9 @@ test("database services preserve permissions and business invariants", { timeout
       await database.restaurantMembership.create({ data: { restaurantId: otherRestaurant.id, userId: outsider.id, role: "MANAGER" } });
       await activate(result.id);
       const before = await database.auditEvent.count({ where: { restaurantId: result.id } });
-      await assert.rejects(services.transferOwnership(admin.id, { restaurantId: result.id, userId: outsider.id }));
+      await assert.rejects(services.transferOwnership(admin.id, { restaurantId: result.id, userId: outsider.id, version: 1 }));
       assert.equal(await database.auditEvent.count({ where: { restaurantId: result.id } }), before);
-      await services.transferOwnership(admin.id, { restaurantId: result.id, userId: manager.id });
+      await services.transferOwnership(admin.id, { restaurantId: result.id, userId: manager.id, version: 1 });
       assert.equal((await database.restaurantMembership.findUniqueOrThrow({ where: { id: membership.id } })).role, "MANAGER");
       assert.equal((await database.restaurantMembership.findUniqueOrThrow({ where: { id: nextOwner.id } })).role, "OWNER");
       assert.equal(await database.restaurantMembership.count({ where: { restaurantId: result.id, role: "OWNER" } }), 1);
@@ -197,7 +197,7 @@ test("database services preserve permissions and business invariants", { timeout
     await t.test("owner membership edits and duplicate owners are rejected", async () => {
       const result = await createRestaurant();
       const { membership } = await addOwner(result.id);
-      await assert.rejects(services.updateMembership(admin.id, { membershipId: membership.id, role: "MANAGER", status: "DISABLED" }), DomainError);
+      await assert.rejects(services.updateMembership(admin.id, { membershipId: membership.id, expectedUpdatedAt: membership.updatedAt.toISOString(), role: "MANAGER", status: "DISABLED" }), DomainError);
       const other = await createUser("Second owner candidate");
       await assert.rejects(database.restaurantMembership.create({ data: { restaurantId: result.id, userId: other.id, role: "OWNER" } }));
       const saved = await database.restaurantMembership.findUniqueOrThrow({ where: { id: membership.id } });

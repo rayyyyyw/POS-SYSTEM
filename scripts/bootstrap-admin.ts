@@ -4,7 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { hashPassword } from "better-auth/crypto";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient } from "../generated/prisma/client";
+import { Prisma, PrismaClient } from "../generated/prisma/client";
 import { z } from "zod";
 
 dotenv.config({ path: [".env.local", ".env"], quiet: true });
@@ -30,7 +30,12 @@ async function main() {
     const password = await hashPassword(input.password);
     await db.$transaction(async tx => {
       // Serializes concurrent first-admin setup without changing existing accounts.
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(19092026)`;
+      const lock = await tx.$queryRaw<Array<{ locked: boolean }>>`
+        SELECT pg_try_advisory_xact_lock(19092026) AS locked
+      `;
+      if (lock[0]?.locked !== true) {
+        throw new Error("Administrator setup is already running. Try again shortly.");
+      }
       if (await tx.user.count({ where: { platformRole: "ADMIN" } })) throw new Error("An administrator already exists. Bootstrap will not create or overwrite another.");
       const id = randomUUID();
       await tx.user.create({ data: { id, name: input.name, email: input.email, platformRole: "ADMIN", emailVerified: true,
@@ -41,6 +46,19 @@ async function main() {
   } finally { await db.$disconnect(); }
 }
 main().catch(error => {
-  console.error(error instanceof z.ZodError ? "Invalid name, email, or password length." : error instanceof Error && error.message.startsWith("An administrator") ? error.message : "Bootstrap failed. Check database configuration and ensure the email is not already registered.");
+  const message =
+    error instanceof z.ZodError
+      ? "Invalid input. Use a valid email and a password between 12 and 128 characters."
+      : error instanceof Error &&
+          (error.message.startsWith("An administrator") ||
+            error.message.startsWith("Administrator setup"))
+        ? error.message
+        : error instanceof Prisma.PrismaClientKnownRequestError &&
+            error.code === "P2002"
+          ? "That email is already registered. Use a different email or recover the existing account."
+          : error instanceof Prisma.PrismaClientInitializationError
+            ? "Could not connect to PostgreSQL. Check DATABASE_URL and confirm the database server is running."
+            : "Bootstrap failed during account creation. Run npm run db:status, then try again.";
+  console.error(message);
   process.exitCode = 1;
 });
