@@ -1,6 +1,6 @@
 # POS System
 
-A multi-tenant restaurant POS and management platform. This phase establishes the public landing page, persistent Platform Admin workflows, authentication, and restaurant account memberships. Restaurant operations and the POS terminal are future modules.
+A multi-tenant restaurant POS and management platform. This phase establishes the public landing page, persistent Platform Admin workflows, authentication, and the restaurant account workspace. Menus, restaurant operations, and the POS terminal are future modules.
 
 Read `AGENTS.md` before development. The installed Next.js documentation is in `node_modules/next/dist/docs/`; use it for this project's framework version.
 
@@ -15,7 +15,7 @@ Read `AGENTS.md` before development. The installed Next.js documentation is in `
 - Persisted platform display name, support email, timezone, and date format used by the admin interface.
 - Account and onboarding totals derived from PostgreSQL. Database failures show errors; there is no runtime mock-data fallback.
 
-`/workspace` shows the signed-in person's restaurant memberships. It is an account foundation, not a restaurant operations dashboard. Menus, inventory, orders, payments, checkout, and restaurant sales reports are not implemented. Sales sections are explicitly unavailable. Notifications, branding uploads, billing, and MFA are also not implemented.
+`/workspace` lists the signed-in person's active memberships and opens `/workspace/[restaurantId]`. The restaurant workspace includes a real account overview, onboarding checklist, settings, and team management. Menus, inventory, orders, payments, checkout, and restaurant sales reports are not implemented. Notifications, branding uploads, billing, and MFA are also not implemented.
 
 ## Local setup
 
@@ -51,6 +51,10 @@ Real mailbox delivery has not been verified in this workspace because provider c
 - `/`: public landing page and early-access request form.
 - `/login`, `/forgot-password`, `/reset-password`, `/verify-email`, `/accept-invitation`: account flows.
 - `/workspace`: authenticated restaurant membership overview.
+- `/workspace/[restaurantId]`: restaurant overview and lifecycle status, with role-aware navigation and a restaurant switcher.
+- `/workspace/[restaurantId]/onboarding`: persisted-data checklist for activation, profile, regional settings, owner, and team.
+- `/workspace/[restaurantId]/settings`: owner-editable business settings; managers have read-only access.
+- `/workspace/[restaurantId]/team`: paginated memberships; owners can invite staff, retry or revoke invitations, and change non-owner roles/access. Managers can view memberships.
 - `/admin`: real platform account totals and recent activity.
 - `/admin/restaurants`: restaurant directory; `/create` adds a restaurant.
 - `/admin/restaurants/[id]`: details, lifecycle, memberships, invitations, and ownership transfer; `/edit` edits business information and `/activity` shows audit history.
@@ -91,7 +95,21 @@ The application uses Next.js App Router, React, TypeScript, Tailwind CSS, select
 
 The mutation flow is UI → Server Action → validated/authorized service → Prisma → PostgreSQL. Protected query functions check the session, and admin services recheck the actor inside the transaction. Platform privileges (`ADMIN`/`NONE`) are separate from restaurant membership roles (`OWNER`/`MANAGER`/`CASHIER`). Browser-provided IDs and role values are never sufficient authorization.
 
-Future tenant operations must use `requireRestaurantMember` with the required roles. It checks the current user, active membership, and active restaurant before granting access. It does not grant platform administrators an implicit tenant bypass. The workspace currently lists only the signed-in user's memberships and contains no POS mutations.
+Restaurant foundation services use `lib/server/restaurant/access.ts` to recheck the active, verified user, active membership, tenant status, and exact permission inside each data transaction. `authorization.ts` adds the session-backed, request-cached page context; its identity-only mode exists solely for account-status screens. The earlier `requireRestaurantMember` remains an active-restaurant-only guard for future operational services. Neither boundary grants platform administrators an implicit tenant bypass.
+
+Restaurant routes live in `app/(restaurant)/workspace/[restaurantId]`. `components/restaurant` contains the workspace UI, `lib/domain/restaurant` contains the role policy and pure checklist logic, `lib/validation/restaurant` contains Zod contracts, and `lib/server/restaurant/services` contains the settings, membership, invitation, query, and onboarding services. `app/actions/restaurant.ts` authenticates each submission and calls those services. Shared form behavior lives in `components/forms`; the existing admin form import remains compatible.
+
+### Restaurant foundation behavior
+
+- Owners can configure and staff ACTIVE or PENDING restaurants. Managers may read settings/team in ACTIVE restaurants. Cashiers can view the ACTIVE account overview but cannot read team/settings or mutate membership. Pending staff wait for activation. SUSPENDED and ARCHIVED memberships show only minimal identity/status screens; protected reads and all tenant mutations are blocked.
+- Ownership transfer remains platform-admin controlled. Ordinary tenant edits cannot change an OWNER membership at all. Disabling a non-owner membership preserves its history, global account, and other restaurant memberships; access can be re-enabled later. There is no hard-delete action.
+- `RestaurantSettings.restaurantId` is both its primary key and restaurant foreign key. Business name, city, email, and phone remain on Restaurant. Its existing `version` protects both admin profile edits and owner settings saves against stale updates. Settings and audits save in the same serializable transaction.
+- Regional configuration validates currency against supported ISO currency codes and timezone using IANA identifiers. The initial timezone follows the existing platform setting (default Asia/Manila). Currency requires an explicit selection. Locale, address, service mode, order prefix, and receipt text are persisted. Service mode, order defaults, prefix, and receipt text are preferences only; this milestone does not generate order numbers, calculate tax, print receipts, or enable table service.
+- Onboarding derives five foundation steps from current records. Profile completion requires a name, city, email or phone, address line 1, and country code. Regional completion requires saved currency/timezone. Team completion requires an active verified manager/cashier or an unexpired, successfully delivered staff invitation. Failed delivery does not complete the step. Menu setup is explicitly future work and excluded from foundation completion totals.
+- Tenant invitations permit MANAGER/CASHIER only, reject existing memberships and duplicate usable invitations, rotate links on resend, and enforce the existing one-minute cooldown and delivery rate limit. Email is delivered after commit. Missing Resend credentials retain a failed invitation for retry; no new environment variables are needed.
+- Admin restaurant details show aggregate onboarding, active-member/pending-invitation counts, owner presence, and the last tenant audit timestamp. They do not grant workspace access. Tenant activity also appears in the existing restaurant audit history.
+
+The additive migration `20260914090000_restaurant_workspace` adds RestaurantSettings, service/order preference enums, and a tenant membership listing index. It does not seed records or alter existing business data.
 
 Database uniqueness constraints, serializable transactions with bounded conflict retries, and version checks on restaurant/settings edits protect consistency. Audit events are written with successful business changes and remain read-only. Queries select needed fields and bound result sizes. Authentication cookies are not used as a cached source of account status; server access checks reload the user record.
 
@@ -114,6 +132,8 @@ npm run start
 Review the test harness configuration before running integration tests. Database tests must use isolated temporary schemas and must never seed, truncate, or delete records in the application's public schema. Use a dedicated development/test database rather than production credentials.
 
 `npm test` covers database permissions, lifecycle and ownership rules, stale edits, concurrent operations, invitation acceptance/expiry/retries, request validation and conversion, and transaction rollback. The database suites share `tests/support/database.ts`, which loads the same environment precedence as the application and applies migrations only inside a generated `pos_test_*` schema. Each run removes its own schema afterward.
+
+`tests/restaurant.test.ts` adds the tenant permission matrix, regional input validation, cross-tenant reads and writes, pending-owner setup, blocked lifecycle states, final-owner protection, membership disabling, concurrent invitation/settings races, pagination, secret-free DTOs, and settings rollback on audit failure. HTTP coverage also exercises owner settings, admin health, manager/cashier restrictions, multiple memberships, direct unauthorized actions, tenant invitation retry/accept/revoke, and suspended/archived screens against the compiled app.
 
 After `npm run build`, run `npm run test:http` to test the compiled application through a disposable local server. It checks login/logout, disabled accounts, session revocation, blocked public signup, unauthorized and cross-origin Server Action requests, tenant membership visibility, restaurant onboarding and lifecycle, persisted landing requests, verification, password recovery, and login rate limits. Forms use the action references from the rendered HTML; the client-hydrated invitation action uses the installed Next/React encoder and current build manifest. Recheck that test adapter when upgrading Next.js.
 

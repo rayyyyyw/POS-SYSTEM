@@ -48,6 +48,15 @@ enum RequestStatus {
   CLOSED
 }
 
+enum ServiceMode {
+  QUICK_SERVICE
+  TABLE_SERVICE
+}
+enum DefaultOrderType {
+  DINE_IN
+  TAKEOUT
+}
+
 model User {
   id            String       @id
   name          String
@@ -126,7 +135,27 @@ model Restaurant {
   updatedAt   DateTime         @updatedAt
   memberships RestaurantMembership[]
   invitations Invitation[]
+  settings    RestaurantSettings?
   @@index([status, createdAt, id])
+}
+
+model RestaurantSettings {
+  restaurantId     String           @id
+  restaurant       Restaurant       @relation(fields: [restaurantId], references: [id], onDelete: Restrict)
+  addressLine1     String           @default("")
+  addressLine2     String           @default("")
+  postalCode       String           @default("")
+  countryCode      String           @default("")
+  timezone         String
+  currencyCode     String
+  locale           String           @default("en")
+  serviceMode      ServiceMode      @default(QUICK_SERVICE)
+  defaultOrderType DefaultOrderType @default(TAKEOUT)
+  orderNumberPrefix String          @default("ORD")
+  receiptHeader    String           @default("")
+  receiptFooter    String           @default("")
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
 }
 
 model RestaurantMembership {
@@ -141,6 +170,7 @@ model RestaurantMembership {
   user         User       @relation(fields: [userId], references: [id], onDelete: Restrict)
   @@unique([restaurantId, userId])
   @@index([userId, status])
+  @@index([restaurantId, status, createdAt, id])
 }
 
 model Invitation {
