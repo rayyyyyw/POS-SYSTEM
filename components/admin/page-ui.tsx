@@ -133,7 +133,7 @@ export function StatusBadge({ status }: { status: string }) {
       )}
     >
       <span className="size-1.5 rounded-full bg-current" aria-hidden="true" />
-      {labelFor(status)}
+      {status === "SENT" ? "Email submitted" : status === "FAILED" ? "Submission unconfirmed" : labelFor(status)}
     </Badge>
   );
 }

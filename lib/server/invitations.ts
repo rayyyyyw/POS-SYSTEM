@@ -4,7 +4,9 @@ import { hashPassword } from "better-auth/crypto";
 import { z } from "zod";
 import { db } from "./db";
 import { transaction, assertAdmin, audit } from "./transaction";
-import { appUrl, sendEmail } from "./email";
+import { sendEmail } from "./email";
+import { accountEmailUrl } from "./email-config";
+import { invitationEmail } from "./email-templates";
 import { assertInvitation, DomainError } from "@/lib/domain/policies";
 import { invitationInput } from "@/lib/validation/admin";
 import { limitSubmission } from "./rate-limit";
@@ -15,10 +17,14 @@ export function newInvitationToken() {
   return { token, tokenHash: tokenHash(token), expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000) };
 }
 export async function deliverInvitation(invitationId: string, token: string) {
-  const invite = await db.invitation.findUniqueOrThrow({ where: { id: invitationId }, include: { restaurant: { select: { name: true } } } });
+  const invite = await db.invitation.findUniqueOrThrow({ where: { id: invitationId }, include: { restaurant: { select: { name: true, status: true } } } });
+  // A rotated/revoked/consumed link must not be submitted by a stale caller.
+  if (invite.tokenHash !== tokenHash(token) || invite.status !== "PENDING" || invite.expiresAt <= new Date() || ["ARCHIVED", "SUSPENDED"].includes(invite.restaurant.status)) return false;
   try {
-    await sendEmail(invite.email, `Invitation to ${invite.restaurant.name} on POS System`,
-      `You have been invited to join ${invite.restaurant.name}.\n\nAccept within 72 hours:\n${appUrl()}/accept-invitation?token=${token}\n\nIf you already have an account, sign in with the invited email to accept.`, `invite-${invite.id}-${invite.tokenHash}`);
+    const url = accountEmailUrl("/accept-invitation");
+    url.searchParams.set("token", token);
+    await sendEmail(invite.email, invitationEmail({ restaurantName: invite.restaurant.name, email: invite.email, owner: invite.role === "OWNER", expiresAt: invite.expiresAt, url: url.toString() }), `invite-${invite.id}-${invite.tokenHash}`);
+    // Legacy SENT means provider acceptance, not confirmed inbox delivery.
     await db.invitation.updateMany({ where: { id: invitationId, tokenHash: tokenHash(token), status: "PENDING" }, data: { deliveryStatus: "SENT" } });
     return true;
   } catch {
@@ -33,7 +39,7 @@ export async function inviteMember(actorId: string, raw: unknown) {
   const invitation = await transaction(async (tx) => {
     const actor = await assertAdmin(tx, actorId);
     const restaurant = await tx.restaurant.findUniqueOrThrow({ where: { id: input.restaurantId } });
-    if (restaurant.status === "ARCHIVED") throw new DomainError("Restore this restaurant before inviting members.");
+    if (["ARCHIVED", "SUSPENDED"].includes(restaurant.status)) throw new DomainError("Restore or reactivate this restaurant before inviting members.");
     if (input.role === "OWNER" && (restaurant.status !== "PENDING" || await tx.restaurantMembership.count({ where: { restaurantId: restaurant.id, role: "OWNER" } }))) throw new DomainError("Use ownership transfer for a restaurant that already has an owner.");
     if (await tx.restaurantMembership.count({ where: { restaurantId: restaurant.id, user: { email: input.email } } })) throw new DomainError("This user already has a membership. Manage their existing access instead.");
     await tx.invitation.updateMany({ where: { restaurantId: restaurant.id, status: "PENDING", ...(input.role === "OWNER" ? { role: "OWNER" } : { email: input.email }) }, data: { status: "REVOKED" } });
@@ -49,7 +55,8 @@ export async function resendInvitation(actorId: string, invitationId: string) {
   await transaction(async (tx) => {
     const actor = await assertAdmin(tx, actorId);
     const invite = await tx.invitation.findUniqueOrThrow({ where: { id: invitationId }, include: { restaurant: true } });
-    if (invite.status !== "PENDING" || invite.restaurant.status === "ARCHIVED") throw new DomainError("This invitation cannot be resent.");
+    if (invite.status !== "PENDING" || ["ARCHIVED", "SUSPENDED"].includes(invite.restaurant.status)) throw new DomainError("This invitation cannot be resent.");
+    if (await tx.restaurantMembership.count({ where: { restaurantId: invite.restaurantId, OR: [{ user: { email: invite.email } }, ...(invite.role === "OWNER" ? [{ role: "OWNER" as const }] : [])] } })) throw new DomainError("This invitation is no longer eligible. Review existing restaurant memberships.");
     if (invite.lastSentAt && Date.now() - invite.lastSentAt.getTime() < 60000) throw new DomainError("Wait one minute before resending.");
     await tx.invitation.update({ where: { id: invite.id }, data: { tokenHash: secret.tokenHash, expiresAt: secret.expiresAt, deliveryStatus: "PENDING", lastSentAt: new Date() } });
     await audit(tx, actor, "Invitation reissued", "The previous invitation link is no longer valid.", invite.restaurantId);

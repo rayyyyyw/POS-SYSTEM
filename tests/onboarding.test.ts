@@ -91,6 +91,28 @@ test("onboarding persists individual identities and handles invalid invitations"
       await assert.rejects(invitations.acceptInvitation({ token: invite.token, name: "Old Token", password }, null), DomainError);
     });
 
+    await t.test("admin-only resend rejects restaurant identities without changing the invitation", async () => {
+      const invite = await knownInvitation();
+      const outsider = await db.user.create({ data: { id: randomUUID(), name: "Other Owner", email: `${randomUUID()}@example.test`, emailVerified: true } });
+      await assert.rejects(invitations.resendInvitation(outsider.id, invite.invitationId), DomainError);
+      assert.equal((await db.invitation.findUniqueOrThrow({ where: { id: invite.invitationId } })).tokenHash, invite.tokenHash);
+      assert.equal(await invitations.deliverInvitation(invite.invitationId, invitations.newInvitationToken().token), false);
+      await assert.rejects(invitations.acceptInvitation({ token: "a".repeat(64), name: "Unknown", password }, null), DomainError);
+    });
+
+    await t.test("editing the business email does not change owner identity or send account mail", async t => {
+      const invite = await knownInvitation();
+      await invitations.acceptInvitation({ token: invite.token, name: "Separate Identity", password }, null);
+      const owner = await db.user.findUniqueOrThrow({ where: { email: invite.email }, include: { accounts: true } });
+      const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("No email expected for profile edits"); });
+      await services.updateRestaurant(admin.id, { id: invite.id, version: 0, name: "Business Profile", slug: `profile-${randomBytes(6).toString("hex")}`, email: "business@example.test" });
+      const after = await db.user.findUniqueOrThrow({ where: { id: owner.id }, include: { accounts: true } });
+      assert.equal(after.email, invite.email);
+      assert.equal(after.accounts[0].password, owner.accounts[0].password);
+      assert.equal((await db.restaurant.findUniqueOrThrow({ where: { id: invite.id } })).email, "business@example.test");
+      assert.equal(fetch.mock.callCount(), 0);
+    });
+
     await t.test("public requests validate, persist, resist overwrites, and convert atomically once", async () => {
       const email = `${randomUUID()}@example.test`;
       const form = () => {

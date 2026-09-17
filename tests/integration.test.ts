@@ -162,13 +162,43 @@ test("database services preserve permissions and business invariants", { timeout
       const before = await database.auditEvent.count({ where: { restaurantId: result.id } });
       await assert.rejects(services.transferOwnership(admin.id, { restaurantId: result.id, userId: outsider.id, version: 1 }));
       assert.equal(await database.auditEvent.count({ where: { restaurantId: result.id } }), before);
-      await services.transferOwnership(admin.id, { restaurantId: result.id, userId: manager.id, version: 1 });
+      const transfer = await services.transferOwnership(admin.id, { restaurantId: result.id, userId: manager.id, version: 1 });
+      assert.equal(transfer.notificationsSubmitted, false);
+      assert.equal(await database.auditEvent.count({ where: { restaurantId: result.id, title: "Ownership notification submission failed" } }), 1);
       assert.equal((await database.restaurantMembership.findUniqueOrThrow({ where: { id: membership.id } })).role, "MANAGER");
       assert.equal((await database.restaurantMembership.findUniqueOrThrow({ where: { id: nextOwner.id } })).role, "OWNER");
       assert.equal(await database.restaurantMembership.count({ where: { restaurantId: result.id, role: "OWNER" } }), 1);
       assert.equal((await database.user.findUniqueOrThrow({ where: { id: owner.id } })).status, "ACTIVE");
       assert.equal((await database.invitation.findUniqueOrThrow({ where: { id: result.invitationId } })).status, "REVOKED");
       assert.equal(await database.auditEvent.count({ where: { restaurantId: result.id, title: "Ownership transferred" } }), 1);
+    });
+
+    await t.test("ownership emails go to old and new account addresses only after commit", async t => {
+      const restaurant = await createRestaurant();
+      const { owner } = await addOwner(restaurant.id);
+      const nextOwner = await createUser("New Owner");
+      await database.restaurantMembership.create({ data: { restaurantId: restaurant.id, userId: nextOwner.id, role: "MANAGER" } });
+      const previous = { RESEND_API_KEY: process.env.RESEND_API_KEY, RESEND_FROM_EMAIL: process.env.RESEND_FROM_EMAIL, ADMIN_EMAIL: process.env.ADMIN_EMAIL };
+      const recipients: string[] = [];
+      const fetch = t.mock.method(globalThis, "fetch", async (url: RequestInfo | URL, options?: RequestInit) => {
+        assert.equal(url, "https://api.resend.com/emails");
+        const membership = await database.restaurantMembership.findUniqueOrThrow({ where: { restaurantId_userId: { restaurantId: restaurant.id, userId: nextOwner.id } } });
+        assert.equal(membership.role, "OWNER", "Ownership must be committed before submitting mail.");
+        const body = JSON.parse(String(options?.body));
+        recipients.push(...body.to);
+        assert.ok(!body.text.includes("password:"));
+        return Response.json({ id: randomUUID() });
+      });
+      try {
+        Object.assign(process.env, { RESEND_API_KEY: "disposable-test-key", RESEND_FROM_EMAIL: "sender@example.test", ADMIN_EMAIL: "admin@example.test" });
+        assert.equal((await services.transferOwnership(admin.id, { restaurantId: restaurant.id, userId: nextOwner.id, version: 0 })).notificationsSubmitted, true);
+        assert.deepEqual(recipients.sort(), [owner.email, nextOwner.email].sort());
+        assert.equal(fetch.mock.callCount(), 2);
+      } finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) delete process.env[key]; else process.env[key] = value;
+        }
+      }
     });
 
     await t.test("owner membership edits and duplicate owners are rejected", async () => {

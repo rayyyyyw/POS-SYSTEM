@@ -192,10 +192,10 @@ export function RestaurantTeamInvitations({
                       }
                     >
                       {invite.deliveryStatus === "SENT"
-                        ? "Email sent"
+                        ? "Email submitted"
                         : invite.deliveryStatus === "FAILED"
-                          ? "Delivery failed"
-                          : "Delivery pending"}
+                          ? "Submission unconfirmed"
+                          : "Submission pending"}
                     </Badge>
                     {expired && <Badge variant="outline">Expired</Badge>}
                   </div>

@@ -1,6 +1,7 @@
 // Loaded only by the disposable QA server, never by the application build.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 
 const database = new URL(process.env.DATABASE_URL);
 assert.match(database.searchParams.get("schema") ?? "", /^pos_test_[a-f0-9]{24}$/);
@@ -17,7 +18,7 @@ globalThis.fetch = async (input, init) => {
   assert.ok(message.to.every(address => address.endsWith("@example.test")), "Only disposable recipients are permitted.");
   if (failDelivery) return Response.json({ message: "Deliberate test delivery failure" }, { status: 503 });
   messages.push(message);
-  return Response.json({ id: `test-message-${messages.length}` });
+  return Response.json({ id: randomUUID() });
 };
 
 const mailbox = createServer(async (request, response) => {

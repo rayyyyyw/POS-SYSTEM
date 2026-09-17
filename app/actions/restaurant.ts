@@ -31,7 +31,7 @@ async function mutate(
       success: true,
       message:
         delivered === false
-          ? "Invitation saved, but email could not be delivered. Ask the platform administrator to check email configuration, then retry after one minute."
+          ? "Invitation saved, but email submission could not be confirmed. Ask the platform administrator to check Resend configuration and logs, then retry after one minute."
           : message,
     };
   });
@@ -43,13 +43,13 @@ export async function updateMembership(_: ActionState, form: FormData) {
   return mutate(form, updateRestaurantMembership, "Team access updated.");
 }
 export async function inviteMember(_: ActionState, form: FormData) {
-  return mutate(form, inviteRestaurantMember, "Invitation sent.");
+  return mutate(form, inviteRestaurantMember, "Invitation email submitted.");
 }
 export async function resendInvitation(_: ActionState, form: FormData) {
   return mutate(
     form,
     resendRestaurantInvitation,
-    "New invitation sent. The previous link is invalid.",
+    "New invitation email submitted. The previous link is invalid.",
   );
 }
 export async function revokeInvitation(_: ActionState, form: FormData) {

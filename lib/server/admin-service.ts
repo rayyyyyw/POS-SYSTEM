@@ -4,6 +4,8 @@ import { createRestaurantInput, updateRestaurantInput, lifecycleInput, settingsI
 import { assertTransition, assertOwnerMutation, DomainError } from "@/lib/domain/policies";
 import { transaction, assertAdmin, audit } from "./transaction";
 import { deliverInvitation, newInvitationToken } from "./invitations";
+import { sendEmail } from "./email";
+import { ownershipChangedEmail } from "./email-templates";
 
 export async function createRestaurant(actorId: string, raw: unknown) {
   const input = createRestaurantInput.parse(raw);
@@ -44,7 +46,7 @@ export async function changeRestaurantStatus(actorId: string, raw: unknown) {
 }
 export async function transferOwnership(actorId: string, raw: unknown) {
   const input = z.object({ restaurantId: id, userId: id, version: z.coerce.number().int().nonnegative() }).parse(raw);
-  await transaction(async (tx) => {
+  const notification = await transaction(async (tx) => {
     const actor = await assertAdmin(tx, actorId);
     const restaurant = await tx.restaurant.findUniqueOrThrow({ where: { id: input.restaurantId } });
     if (restaurant.version !== input.version) throw new DomainError("This restaurant has changed. Reload before transferring ownership.");
@@ -52,12 +54,22 @@ export async function transferOwnership(actorId: string, raw: unknown) {
     const target = await tx.restaurantMembership.findUniqueOrThrow({ where: { restaurantId_userId: { restaurantId: input.restaurantId, userId: input.userId } }, include: { user: true } });
     if (target.status !== "ACTIVE" || target.user.status !== "ACTIVE" || !target.user.emailVerified) throw new DomainError("Choose an active, verified restaurant member.");
     if (target.role === "OWNER") throw new DomainError("This member already owns the restaurant.");
+    const previousOwner = await tx.restaurantMembership.findFirst({ where: { restaurantId: input.restaurantId, role: "OWNER" }, select: { user: { select: { email: true } } } });
     await tx.restaurantMembership.updateMany({ where: { restaurantId: input.restaurantId, role: "OWNER" }, data: { role: "MANAGER" } });
     await tx.restaurantMembership.update({ where: { id: target.id }, data: { role: "OWNER" } });
     await tx.invitation.updateMany({ where: { restaurantId: input.restaurantId, role: "OWNER", status: "PENDING" }, data: { status: "REVOKED" } });
     await tx.restaurant.update({ where: { id: input.restaurantId }, data: { version: { increment: 1 } } });
     await audit(tx, actor, "Ownership transferred", "An existing verified member became the owner; the previous owner became a manager.", input.restaurantId, input.userId);
+    return { restaurantName: restaurant.name, actor, recipients: [{ email: target.user.email, isNewOwner: true }, ...(previousOwner ? [{ email: previousOwner.user.email, isNewOwner: false }] : [])] };
   });
+  // Never roll back a committed ownership change because an external email fails.
+  const outcomes = await Promise.allSettled(notification.recipients.map(recipient =>
+    sendEmail(recipient.email, ownershipChangedEmail(notification.restaurantName, recipient.isNewOwner), `ownership-${input.restaurantId}-${input.version}-${recipient.isNewOwner ? "new" : "previous"}`),
+  ));
+  const notificationsSubmitted = outcomes.every(result => result.status === "fulfilled");
+  await transaction(tx => audit(tx, notification.actor, notificationsSubmitted ? "Ownership notifications submitted" : "Ownership notification submission failed", notificationsSubmitted ? "Security notices were submitted to the affected account addresses. Inbox delivery is not confirmed." : "Ownership was updated, but one or more security notices could not be confirmed. Contact affected owners and check Resend logs before retrying any email.", input.restaurantId))
+    .catch(() => { console.error("Ownership notification outcome could not be audited; the ownership transfer remains committed."); });
+  return { notificationsSubmitted };
 }
 export async function updateMembership(actorId: string, raw: unknown) {
   const input = z.object({ membershipId: id, expectedUpdatedAt: z.string().datetime(), role: z.enum(["MANAGER", "CASHIER"]), status: z.enum(["ACTIVE", "DISABLED"]) }).parse(raw);

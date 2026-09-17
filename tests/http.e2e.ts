@@ -284,7 +284,7 @@ test(
             where: { slug: "http-kitchen" },
           });
           restaurantId = restaurant.id;
-          const link = await emailLink(owner.email, "Invitation");
+          const link = await emailLink(owner.email, "You're invited to manage");
           const token = new URL(link).searchParams.get("token");
           assert.ok(token);
           await invitationAction(ownerClient, token);
@@ -482,11 +482,14 @@ test(
             fields(form, { ...input, restaurantId: other.id }),
           );
           assert.equal(await app.db.restaurantSettings.count(), 0);
+          const emailsBeforeEdit = (await messages()).length;
           const response = await ownerClient(
             path,
             fields(form, { ...input, restaurantId }),
           );
           assert.equal(response.status, 200);
+          assert.equal((await messages()).length, emailsBeforeEdit, "Business profile edits must not send account emails.");
+          assert.equal((await app.db.user.findUniqueOrThrow({ where: { id: owner.id } })).email, owner.email);
           assert.equal(
             (
               await app.db.restaurantSettings.findUniqueOrThrow({
@@ -662,7 +665,7 @@ test(
           assert.equal(invite.deliveryStatus, "FAILED");
           assert.ok(
             (await (await ownerClient(path)).text()).includes(
-              "Delivery failed",
+              "Submission unconfirmed",
             ),
           );
           await fetch(`${app.mailbox}/failure`, json({ enabled: false }));
@@ -843,6 +846,9 @@ test(
           const token = new URL(location, app.origin).searchParams.get("token");
           assert.ok(token);
           const nextPassword = "Disposable-reset-test-2026";
+          const stored = await app.db.verification.findMany({ where: { value: owner.id } });
+          assert.ok(stored.length > 0);
+          assert.ok(stored.every(row => !row.identifier.includes(token) && row.value !== token), "Reset tokens must not be stored in plaintext.");
           assert.equal(
             (
               await anonymous(
@@ -875,6 +881,26 @@ test(
           );
         },
       );
+
+      await t.test("password recovery is generic, rejects off-site callbacks and expires hashed tokens", async () => {
+        const account = await user("Expiry Test");
+        const request = client(app.origin);
+        const known = await request("/api/auth/request-password-reset", json({ email: account.email, redirectTo: "/reset-password" }));
+        const unknown = await request("/api/auth/request-password-reset", json({ email: "unknown-account@example.test", redirectTo: "/reset-password" }));
+        assert.equal(known.status, 200);
+        assert.equal(unknown.status, 200);
+        assert.deepEqual(await known.json(), await unknown.json());
+        const link = new URL(await emailLink(account.email, "Reset"));
+        const token = link.pathname.split("/").pop()!;
+        const stored = await app.db.verification.findMany({ where: { value: account.id } });
+        assert.equal(stored.length, 1);
+        assert.ok(!stored[0].identifier.includes(token));
+        assert.ok(stored[0].expiresAt.getTime() <= Date.now() + 3_600_000);
+        await app.db.verification.update({ where: { id: stored[0].id }, data: { expiresAt: new Date(0) } });
+        assert.equal((await request("/api/auth/reset-password", json({ token, newPassword: "Must-not-be-saved-2026" }))).ok, false);
+        assert.equal((await login(client(app.origin), account.email)).status, 200);
+        assert.equal((await client(app.origin)("/api/auth/request-password-reset", json({ email: account.email, redirectTo: "https://evil.example/reset-password" }))).ok, false);
+      });
 
       await t.test(
         "revocation and global disable take effect on subsequent requests",

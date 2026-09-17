@@ -28,7 +28,7 @@ function reportProviderError(error: ErrorResponse) {
   } else if (/domain.*not verified|verify.*domain|unverified.*domain/i.test(message)) {
     fail("sender_domain_verification", "The sender domain is not verified for this Resend account. Verify it, or use --from onboarding@resend.dev with your Resend account email as --to.", error.statusCode);
   } else if (code === "invalid_from_address") {
-    fail("sender_address", "The sender address was rejected. Check --from or EMAIL_FROM.", error.statusCode);
+    fail("sender_address", "The sender address was rejected. Check --from, RESEND_FROM_EMAIL or legacy EMAIL_FROM.", error.statusCode);
   } else if (/recipient|\bto\b.*email/i.test(message)) {
     fail("recipient_restriction", "Resend rejected the recipient. Check RESEND_TEST_EMAIL or --to and the recipient restrictions in your Resend dashboard.", error.statusCode);
   } else if (/quota|rate_limit/.test(code)) {
@@ -49,7 +49,7 @@ async function main() {
     return;
   }
   if (args.help) {
-    console.log("Run from the repository root:\nnpm run test:resend\n\nConfigure RESEND_API_KEY and RESEND_TEST_EMAIL in .env.local (or .env / your shell). One email per invocation. --to overrides RESEND_TEST_EMAIL. --from overrides EMAIL_FROM; otherwise the default is onboarding@resend.dev. With that sender, use your Resend account email as the recipient. Pass options after --, for example: npm run test:resend -- --check. --check checks key presence without sending or verifying key validity. No dev server is required.");
+    console.log("Run from the repository root:\nnpm run test:resend\n\nConfigure RESEND_API_KEY and RESEND_TEST_EMAIL in .env.local (or .env / your shell). One email per invocation. --to overrides RESEND_TEST_EMAIL. Sender precedence: --from, RESEND_FROM_EMAIL, legacy EMAIL_FROM, onboarding@resend.dev. With the test sender, use your Resend account email as the recipient. Pass options after --, for example: npm run test:resend -- --check. --check checks key presence without sending or verifying key validity. No dev server is required.");
     return;
   }
   if (!process.env.RESEND_API_KEY?.trim()) {
@@ -62,14 +62,14 @@ async function main() {
   }
 
   const to = args.to?.trim() || process.env.RESEND_TEST_EMAIL?.trim();
-  const from = args.from?.trim() || process.env.EMAIL_FROM?.trim() || "onboarding@resend.dev";
+  const from = args.from?.trim() || process.env.RESEND_FROM_EMAIL?.trim() || process.env.EMAIL_FROM?.trim() || "onboarding@resend.dev";
   const address = z.string().email().max(254);
   if (!address.safeParse(to).success) {
     fail("recipient_input", "Set RESEND_TEST_EMAIL in .env.local to one valid email, or provide --to. With onboarding@resend.dev, use the email address registered to your Resend account.");
     return;
   }
   if (/[\r\n]/.test(from) || !address.safeParse(from.match(/<([^<>]+)>$/)?.[1] ?? from).success) {
-    fail("sender_input", "Provide a valid --from address, configure EMAIL_FROM, or use --from onboarding@resend.dev.");
+    fail("sender_input", "Provide a valid --from address, configure RESEND_FROM_EMAIL, or use --from onboarding@resend.dev.");
     return;
   }
 
