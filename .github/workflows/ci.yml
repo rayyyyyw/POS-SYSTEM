@@ -1,0 +1,156 @@
+name: CI and Release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    concurrency:
+      group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: pos_ci
+          POSTGRES_PASSWORD: disposable_ci_password
+          POSTGRES_DB: pos_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pos_ci -d pos_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    # No repository or environment secrets are referenced in this job.
+    env:
+      DATABASE_URL: postgresql://pos_ci:disposable_ci_password@127.0.0.1:5432/pos_ci?schema=public
+      BETTER_AUTH_SECRET: ci-only-not-a-production-secret-52f9d8ba6c17420e
+      APP_URL: http://localhost:3000
+      BETTER_AUTH_URL: http://localhost:3000
+      RESEND_API_KEY: ""
+      RESEND_FROM_EMAIL: ""
+      RESEND_TEST_EMAIL: ""
+      ADMIN_EMAIL: ""
+      EMAIL_FROM: ""
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.x"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Generate Prisma Client
+        run: npm run db:generate
+      - name: Apply migrations to disposable PostgreSQL
+        run: npm run db:migrate
+      - name: Verify disposable database migration status
+        run: npm run db:status
+      - name: Unit and database tests
+        run: npm test
+      - name: ESLint
+        run: npm run lint
+      # The HTTP harness starts next start and reads this build's action manifest.
+      - name: Production build
+        run: npm run build
+      - name: HTTP tests with intercepted email
+        run: npm run test:http
+
+  production:
+    name: Production release
+    needs: ci
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.ci.result == 'success' &&
+      vars.PRODUCTION_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: production
+    # Never auto-cancel an in-progress migration/release for a newer commit.
+    concurrency:
+      group: pos-system-production
+      cancel-in-progress: false
+    steps:
+      - name: Checkout the CI-validated commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node.js without a shared dependency cache
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.x"
+          package-manager-cache: false
+      - name: Check required release configuration
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          PRODUCTION_DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          node --input-type=module <<'NODE'
+          const required = ['VERCEL_TOKEN', 'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID', 'PRODUCTION_DATABASE_URL'];
+          if (required.some(name => !process.env[name]?.trim())) {
+            console.error('Missing production environment secrets. Review the CI/CD setup guide.');
+            process.exit(1);
+          }
+          try {
+            const url = new URL(process.env.PRODUCTION_DATABASE_URL);
+            if (!['postgres:', 'postgresql:'].includes(url.protocol) ||
+                ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
+                !url.hostname || url.pathname.length < 2) throw new Error();
+          } catch {
+            console.error('Production migration connection must be a valid remote PostgreSQL URL.');
+            process.exit(1);
+          }
+          NODE
+      - name: Install locked migration tooling
+        run: npm ci
+      - name: Install pinned Vercel CLI
+        run: npm install --global vercel@59.20.0
+      - name: Reject an obsolete queued release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "$latest" != "$GITHUB_SHA" ]]; then
+            echo 'This commit is no longer main HEAD. Release stopped before migrations.'
+            exit 1
+          fi
+      - name: Apply reviewed production migrations
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+        run: |
+          # Keep CLI connection diagnostics private; never upload this log.
+          if ! npm run db:migrate > "$RUNNER_TEMP/production-migration.log" 2>&1; then
+            echo 'Production migration failed. Rollout stopped; inspect database migration history through a trusted operator session.'
+            exit 1
+          fi
+          if ! npm run db:status >> "$RUNNER_TEMP/production-migration.log" 2>&1; then
+            echo 'Production migration status is not clean. Rollout stopped.'
+            exit 1
+          fi
+          echo 'Production migrations applied and status verified.'
+      - name: Build and deploy the validated source on Vercel
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: vercel deploy --prod --yes --token "$VERCEL_TOKEN"
