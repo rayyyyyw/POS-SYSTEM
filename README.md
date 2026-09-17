@@ -143,6 +143,12 @@ For manual browser checks, build first and run `node_modules/.bin/tsx tests/serv
 
 ## Rollout and remaining work
 
+See [CI/CD setup and release operations](docs/ci-cd.md) for GitHub Actions,
+disposable CI PostgreSQL, protected production migrations, and Vercel setup.
+Production automation is disabled until its protected environment is configured
+and `PRODUCTION_DEPLOY_ENABLED` is explicitly enabled. Native Vercel Git deployments
+are disabled in `vercel.json`; previews are not enabled by this milestone.
+
 Before deploying, review migrations, take a recoverable database backup, rehearse migration deployment against a staging copy, and confirm `db:status`. Keep existing migration history and apply corrections through new forward migrations. Do not use `db push`, reset a database, or delete migrations to work around drift. Rolling back application code must remain compatible with the deployed schema; destructive rollback requires a separately reviewed recovery procedure.
 
 Configure the real application origin, HTTPS, a production authentication secret, verified email delivery, and database connection limits for the hosting environment. Verify invitation delivery, password recovery, direct unauthorized requests, cross-tenant boundaries, and the complete create/invite/accept/activate/archive/restore workflow before opening access.
