@@ -91,6 +91,31 @@ test("onboarding persists individual identities and handles invalid invitations"
       await assert.rejects(invitations.acceptInvitation({ token: invite.token, name: "Old Token", password }, null), DomainError);
     });
 
+    await t.test("post-commit email status failure preserves the invitation and reports only safe diagnostics", async t => {
+      const logs: unknown[][] = [];
+      t.mock.method(console, "error", (...args: unknown[]) => { logs.push(args); });
+      const originalUpdateMany = db.invitation.updateMany;
+      const statusWrite = t.mock.fn(async () => {
+        throw new Error("private-database-connection-details");
+      });
+      // Prisma delegates expose methods through a proxy rather than descriptors.
+      // This test-only rejection substitutes for the delegate's branded promise.
+      db.invitation.updateMany = statusWrite as unknown as typeof originalUpdateMany;
+      t.after(() => { db.invitation.updateMany = originalUpdateMany; });
+      let failureCode: string | undefined;
+      const created = await services.createRestaurant(admin.id, input(), failure => { failureCode = failure.code; });
+      assert.equal(created.delivered, false);
+      assert.equal(failureCode, "missing_api_key");
+      assert.equal(statusWrite.mock.callCount(), 1);
+      const saved = await db.invitation.findUniqueOrThrow({ where: { id: created.invitationId } });
+      assert.equal(saved.restaurantId, created.id);
+      assert.equal(saved.status, "PENDING");
+      assert.equal(saved.deliveryStatus, "PENDING");
+      assert.match(JSON.stringify(logs), /missing_api_key/);
+      assert.match(JSON.stringify(logs), /committed invitation remains recoverable/);
+      assert.doesNotMatch(JSON.stringify(logs), /private-database-connection-details/);
+    });
+
     await t.test("admin-only resend rejects restaurant identities without changing the invitation", async () => {
       const invite = await knownInvitation();
       const outsider = await db.user.create({ data: { id: randomUUID(), name: "Other Owner", email: `${randomUUID()}@example.test`, emailVerified: true } });

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { test } from "node:test";
-import { hashPassword } from "better-auth/crypto";
+import { hashPassword, verifyPassword } from "better-auth/crypto";
 import { startIsolatedApp } from "./support/app-server";
 
 let clientNumber = 0;
@@ -80,7 +80,7 @@ async function formFor(request: Client, path: string, field: string) {
   );
   return data;
 }
-async function invitationAction(request: Client, token: string) {
+async function invitationAction(request: Client, token: string, input: Record<string, string> = {}) {
   // The invitation form waits for client session hydration. Exercise that action
   // using the installed Next/React encoder and this build's reference manifest.
   const manifest = JSON.parse(
@@ -96,6 +96,7 @@ async function invitationAction(request: Client, token: string) {
     "next/dist/compiled/react-server-dom-webpack/client.node",
   ) as { encodeReply(values: unknown[]): Promise<string | FormData> };
   const form = new FormData();
+  for (const [key, value] of Object.entries(input)) form.set(key, value);
   form.set("token", token);
   return request(`/accept-invitation?token=${token}`, {
     method: "POST",
@@ -160,6 +161,8 @@ test(
           to: string[];
           subject: string;
           text: string;
+          html: string;
+          reply_to?: string;
         }>;
       const emailLink = async (email: string, subject: string) => {
         for (let attempt = 0; attempt < 30; attempt++) {
@@ -825,6 +828,131 @@ test(
           assert.equal((await login(request, unverified.email)).status, 200);
         },
       );
+
+      await t.test("Resend recipient restriction preserves the owner email and gives safe admin retry feedback", async () => {
+        const ownerEmail = "restricted-owner@example.test";
+        await fetch(`${app.mailbox}/failure`, json({ enabled: true, reason: "recipient_restriction" }));
+        try {
+          const create = await formFor(adminClient, "/admin/restaurants/create", "ownerEmail");
+          const result = await adminClient("/admin/restaurants/create", fields(create, { name: "Restricted Kitchen", slug: "restricted-kitchen", city: "Test City", email: "restricted-business@example.test", ownerName: "Restricted Owner", ownerEmail }));
+          const body = await result.text();
+          assert.ok(body.includes("Verify a sending domain"));
+          assert.ok(!body.includes("private-test@example.test"));
+          assert.ok(!body.includes("disposable-test-key"));
+          const restaurant = await app.db.restaurant.findUniqueOrThrow({ where: { slug: "restricted-kitchen" } });
+          const invite = await app.db.invitation.findFirstOrThrow({ where: { restaurantId: restaurant.id } });
+          assert.equal(invite.email, ownerEmail);
+          assert.equal(invite.role, "OWNER");
+          assert.equal(invite.status, "PENDING");
+          assert.equal(invite.deliveryStatus, "FAILED");
+          assert.ok(!(await messages()).some(message => message.to.includes(ownerEmail)));
+          const path = `/admin/restaurants/${restaurant.id}`;
+          await app.db.invitation.update({ where: { id: invite.id }, data: { lastSentAt: new Date(Date.now() - 61_000) } });
+          const retry = await formFor(adminClient, path, "Retry delivery");
+          const rejected = await adminClient(path, fields(retry, { invitationId: invite.id }));
+          assert.ok((await rejected.text()).includes("intended recipient has not been changed"));
+          const failedRetry = await app.db.invitation.findUniqueOrThrow({ where: { id: invite.id } });
+          assert.equal(failedRetry.email, ownerEmail);
+          assert.notEqual(failedRetry.tokenHash, invite.tokenHash);
+          const cooldown = await formFor(adminClient, path, "Retry delivery");
+          assert.ok((await (await adminClient(path, fields(cooldown, { invitationId: invite.id }))).text()).includes("Wait one minute"));
+          await fetch(`${app.mailbox}/failure`, json({ enabled: false }));
+          await app.db.invitation.update({ where: { id: invite.id }, data: { lastSentAt: new Date(Date.now() - 61_000) } });
+          const recovered = await formFor(adminClient, path, "Retry delivery");
+          await adminClient(path, fields(recovered, { invitationId: invite.id }));
+          assert.equal(await app.db.invitation.count({ where: { restaurantId: restaurant.id } }), 1);
+          assert.equal((await app.db.invitation.findUniqueOrThrow({ where: { id: invite.id } })).deliveryStatus, "SENT");
+          await emailLink(ownerEmail, "You're invited to manage");
+        } finally {
+          await fetch(`${app.mailbox}/failure`, json({ enabled: false }));
+        }
+      });
+
+      await t.test("new owner follows the emailed link, creates credentials and receives only assigned tenant access", async () => {
+        const ownerEmail = "brand-new-owner@example.test";
+        const businessEmail = "separate-business@example.test";
+        const create = await formFor(adminClient, "/admin/restaurants/create", "ownerEmail");
+        await adminClient("/admin/restaurants/create", fields(create, { name: "New Owner Kitchen", slug: "new-owner-kitchen", city: "Test City", email: businessEmail, ownerName: "New Owner", ownerEmail }));
+        const restaurant = await app.db.restaurant.findUniqueOrThrow({ where: { slug: "new-owner-kitchen" } });
+        const invite = await app.db.invitation.findFirstOrThrow({ where: { restaurantId: restaurant.id, role: "OWNER" } });
+        assert.equal(invite.email, ownerEmail);
+        assert.equal(await app.db.user.findUnique({ where: { email: ownerEmail } }), null);
+        const link = new URL(await emailLink(ownerEmail, "You're invited to manage"));
+        assert.equal(link.origin, app.origin);
+        assert.equal(link.pathname, "/accept-invitation");
+        const token = link.searchParams.get("token")!;
+        assert.match(token, /^[a-f0-9]{64}$/);
+        assert.equal(invite.tokenHash, createHash("sha256").update(token).digest("hex"));
+        assert.notEqual(invite.tokenHash, token);
+        const email = (await messages()).find(message => message.to.includes(ownerEmail))!;
+        assert.deepEqual(email.to, [ownerEmail]);
+        assert.equal(email.reply_to, "admin@example.test");
+        assert.ok(!email.to.includes("manual-test-only@example.test"));
+        assert.ok(!email.to.includes(businessEmail));
+        assert.match(email.text, /72 hours/);
+        assert.ok(email.html.includes("POS-SYSTEM"));
+        assert.ok(!email.text.includes(invite.tokenHash));
+        const newOwnerClient = client(app.origin);
+        assert.equal((await newOwnerClient(link.pathname + link.search)).status, 200);
+        await invitationAction(ownerClient, token, { name: "Wrong Signed-in Owner", password });
+        assert.equal(await app.db.user.findUnique({ where: { email: ownerEmail } }), null);
+        assert.equal(await app.db.restaurantMembership.count({ where: { restaurantId: restaurant.id } }), 0);
+        const newPassword = "New-owner-disposable-password-2026";
+        const accepted = await invitationAction(newOwnerClient, token, { name: "New Owner", password: newPassword, role: "ADMIN", userId: admin.id });
+        assert.match(await accepted.text(), /Your account and membership are ready/);
+        const account = await app.db.user.findUniqueOrThrow({ where: { email: ownerEmail }, include: { accounts: true, memberships: true } });
+        assert.equal(account.platformRole, "NONE");
+        assert.equal(account.emailVerified, true);
+        assert.equal(account.memberships.length, 1);
+        assert.equal(account.memberships[0].restaurantId, restaurant.id);
+        assert.equal(account.memberships[0].role, "OWNER");
+        assert.ok(await verifyPassword({ hash: account.accounts[0].password!, password: newPassword }));
+        assert.equal((await login(newOwnerClient, ownerEmail, newPassword)).status, 200);
+        assert.ok((await (await newOwnerClient(`/workspace/${restaurant.id}/settings`)).text()).includes("New Owner Kitchen"));
+        const other = await app.db.restaurant.findUniqueOrThrow({ where: { id: restaurantId } });
+        assert.ok(!(await (await newOwnerClient(`/workspace/${other.id}/settings`)).text()).includes(other.name));
+        assert.equal((await newOwnerClient("/admin/restaurants")).headers.get("location"), "/workspace");
+        await invitationAction(newOwnerClient, token);
+        assert.equal(await app.db.restaurantMembership.count({ where: { restaurantId: restaurant.id } }), 1);
+        assert.equal((await app.db.invitation.findUniqueOrThrow({ where: { id: invite.id } })).status, "ACCEPTED");
+      });
+
+      await t.test("revoked and expired owner links stay invalid while admin can issue fresh invitations", async () => {
+        const ownerEmail = "replacement-owner@example.test";
+        const create = await formFor(adminClient, "/admin/restaurants/create", "ownerEmail");
+        await adminClient("/admin/restaurants/create", fields(create, { name: "Replacement Kitchen", slug: "replacement-kitchen", city: "Test City", email: "replacement-business@example.test", ownerName: "Replacement Owner", ownerEmail }));
+        const restaurant = await app.db.restaurant.findUniqueOrThrow({ where: { slug: "replacement-kitchen" } });
+        const path = `/admin/restaurants/${restaurant.id}`;
+        const first = await app.db.invitation.findFirstOrThrow({ where: { restaurantId: restaurant.id } });
+        const oldToken = new URL(await emailLink(ownerEmail, "You're invited to manage")).searchParams.get("token")!;
+        const revoke = await formFor(adminClient, path, "Revoke invitation");
+        await adminClient(path, fields(revoke, { invitationId: first.id }));
+        await invitationAction(client(app.origin), oldToken, { name: "Blocked", password });
+        assert.equal(await app.db.user.findUnique({ where: { email: ownerEmail } }), null);
+        assert.equal((await app.db.invitation.findUniqueOrThrow({ where: { id: first.id } })).status, "REVOKED");
+        const send = await formFor(adminClient, path, "email");
+        await adminClient(path, fields(send, { email: ownerEmail, role: "OWNER" }));
+        const fresh = await app.db.invitation.findFirstOrThrow({ where: { restaurantId: restaurant.id, status: "PENDING" } });
+        const freshToken = new URL(await emailLink(ownerEmail, "You're invited to manage")).searchParams.get("token")!;
+        assert.notEqual(fresh.id, first.id);
+        assert.notEqual(freshToken, oldToken);
+        await app.db.invitation.update({ where: { id: fresh.id }, data: { expiresAt: new Date(0), lastSentAt: new Date(Date.now() - 61_000) } });
+        await invitationAction(client(app.origin), freshToken, { name: "Expired", password });
+        assert.equal(await app.db.user.findUnique({ where: { email: ownerEmail } }), null);
+        const retry = await formFor(adminClient, path, "Resend invitation");
+        await adminClient(path, fields(retry, { invitationId: fresh.id }));
+        const rotated = await app.db.invitation.findUniqueOrThrow({ where: { id: fresh.id } });
+        assert.notEqual(rotated.tokenHash, fresh.tokenHash);
+        assert.equal(rotated.email, ownerEmail);
+        assert.equal(rotated.restaurantId, restaurant.id);
+        assert.equal(rotated.deliveryStatus, "SENT");
+        await invitationAction(client(app.origin), oldToken, { name: "Revoked", password });
+        await invitationAction(client(app.origin), freshToken, { name: "Rotated", password });
+        assert.equal(await app.db.restaurantMembership.count({ where: { restaurantId: restaurant.id } }), 0);
+        const current = new URL(await emailLink(ownerEmail, "You're invited to manage")).searchParams.get("token")!;
+        await invitationAction(client(app.origin), current, { name: "Replacement Owner", password });
+        assert.equal(await app.db.restaurantMembership.count({ where: { restaurantId: restaurant.id, role: "OWNER" } }), 1);
+      });
 
       await t.test(
         "password recovery invalidates old credentials, sessions and used reset links",

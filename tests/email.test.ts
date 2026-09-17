@@ -25,9 +25,9 @@ test("transactional email is server-configured, escaped and fails without secret
   const message = passwordResetEmail("http://localhost:3000/reset-password?token=disposable-token");
   try {
     await t.test("missing key, invalid sender and invalid admin contact fail before network I/O", async () => {
-      for (const [key, value] of [["RESEND_API_KEY", ""], ["RESEND_FROM_EMAIL", "invalid"], ["ADMIN_EMAIL", "invalid"]]) {
+      for (const [key, value, code] of [["RESEND_API_KEY", "", "missing_api_key"], ["RESEND_FROM_EMAIL", "invalid", "invalid_sender"], ["ADMIN_EMAIL", "invalid", "configuration"]]) {
         defaults(); process.env[key] = value;
-        await assert.rejects(sendEmail("owner@example.test", message), { code: "configuration" });
+        await assert.rejects(sendEmail("owner@example.test", message), { code });
         assert.equal(requests.length, 0);
       }
     });
@@ -73,10 +73,31 @@ test("transactional email is server-configured, escaped and fails without secret
     });
     await t.test("invalid recipients and header injection are rejected", async () => {
       defaults();
-      await assert.rejects(sendEmail("owner@example.test,other@example.test", message), { code: "invalid_message" });
+      await assert.rejects(sendEmail("owner@example.test,other@example.test", message), { code: "invalid_recipient" });
       await assert.rejects(sendEmail("owner@example.test", { ...message, subject: "Subject\r\nBcc: other@example.test" }), { code: "invalid_message" });
       assert.equal(requests.length, 0);
     });
+    await t.test("provider diagnostics distinguish key, recipient restriction and domain failures without echoing secrets", async () => {
+      for (const [name, detail, code] of [
+        ["invalid_api_key", "API key is invalid", "authentication"],
+        ["restricted_api_key", "API key is not active", "authentication"],
+        ["validation_error", "You can only send testing emails to your own email address (secret@example.test)", "recipient_restriction"],
+        ["validation_error", "The secret.example domain is not verified", "unverified_domain"],
+        ["invalid_from_address", "Invalid sender", "invalid_sender"],
+        ["validation_error", "Invalid recipient secret@example.test", "invalid_recipient"],
+        ["daily_quota_exceeded", "Quota exceeded", "rate_limit"],
+      ]) {
+        defaults(); response = () => Response.json({ name, message: `${detail} disposable-test-key` }, { status: 403 });
+        await assert.rejects(sendEmail("owner@example.test", message), error => {
+          assert.ok(error instanceof EmailDeliveryError);
+          assert.equal(error.code, code);
+          assert.doesNotMatch(error.message, /disposable-test-key|secret@example\.test|secret\.example/);
+          return true;
+        });
+      }
+      assert.equal(logs.length, 0);
+    });
+
     await t.test("account URLs cannot redirect to another origin or embed credentials", () => {
       defaults();
       assert.equal(appUrl(), "http://localhost:3000");

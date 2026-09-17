@@ -30,7 +30,9 @@ export function InvitationForm({ token }: { token: string }) {
         setSignOutError("We couldn't sign you out. Please try again.");
         return;
       }
-      router.replace(`/login?invitation=${encodeURIComponent(token)}`);
+      // The invited identity may not have an account yet. Return to setup,
+      // where existing users can still choose "Sign in to accept".
+      router.replace(`/accept-invitation?token=${encodeURIComponent(token)}`);
       router.refresh();
     } catch {
       setSignOutError("We couldn't reach the account service. Please try again.");

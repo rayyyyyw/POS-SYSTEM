@@ -5,7 +5,7 @@ import { z } from "zod";
 import { db } from "./db";
 import { transaction, assertAdmin, audit } from "./transaction";
 import { sendEmail } from "./email";
-import { accountEmailUrl } from "./email-config";
+import { accountEmailUrl, EmailDeliveryError } from "./email-config";
 import { invitationEmail } from "./email-templates";
 import { assertInvitation, DomainError } from "@/lib/domain/policies";
 import { invitationInput } from "@/lib/validation/admin";
@@ -16,23 +16,28 @@ export function newInvitationToken() {
   const token = randomBytes(32).toString("hex");
   return { token, tokenHash: tokenHash(token), expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000) };
 }
-export async function deliverInvitation(invitationId: string, token: string) {
-  const invite = await db.invitation.findUniqueOrThrow({ where: { id: invitationId }, include: { restaurant: { select: { name: true, status: true } } } });
-  // A rotated/revoked/consumed link must not be submitted by a stale caller.
-  if (invite.tokenHash !== tokenHash(token) || invite.status !== "PENDING" || invite.expiresAt <= new Date() || ["ARCHIVED", "SUSPENDED"].includes(invite.restaurant.status)) return false;
+export type DeliveryFailureReporter = (failure: EmailDeliveryError) => void;
+export async function deliverInvitation(invitationId: string, token: string, onFailure?: DeliveryFailureReporter) {
   try {
+    const invite = await db.invitation.findUniqueOrThrow({ where: { id: invitationId }, include: { restaurant: { select: { name: true, status: true } } } });
+    // A rotated/revoked/consumed link must not be submitted by a stale caller.
+    if (invite.tokenHash !== tokenHash(token) || invite.status !== "PENDING" || invite.expiresAt <= new Date() || ["ARCHIVED", "SUSPENDED"].includes(invite.restaurant.status)) return false;
     const url = accountEmailUrl("/accept-invitation");
     url.searchParams.set("token", token);
     await sendEmail(invite.email, invitationEmail({ restaurantName: invite.restaurant.name, email: invite.email, owner: invite.role === "OWNER", expiresAt: invite.expiresAt, url: url.toString() }), `invite-${invite.id}-${invite.tokenHash}`);
     // Legacy SENT means provider acceptance, not confirmed inbox delivery.
     await db.invitation.updateMany({ where: { id: invitationId, tokenHash: tokenHash(token), status: "PENDING" }, data: { deliveryStatus: "SENT" } });
     return true;
-  } catch {
-    await db.invitation.updateMany({ where: { id: invitationId, tokenHash: tokenHash(token), status: "PENDING" }, data: { deliveryStatus: "FAILED" } });
+  } catch (error) {
+    const failure = error instanceof EmailDeliveryError ? error : new EmailDeliveryError("uncertain");
+    console.error("Invitation email submission failed:", failure.code);
+    await db.invitation.updateMany({ where: { id: invitationId, tokenHash: tokenHash(token), status: "PENDING" }, data: { deliveryStatus: "FAILED" } })
+      .catch(() => { console.error("Invitation submission status could not be saved; the committed invitation remains recoverable."); });
+    onFailure?.(failure);
     return false;
   }
 }
-export async function inviteMember(actorId: string, raw: unknown) {
+export async function inviteMember(actorId: string, raw: unknown, onFailure?: DeliveryFailureReporter) {
   const input = invitationInput.parse(raw);
   await limitSubmission("invite", actorId, 20, 300);
   const secret = newInvitationToken();
@@ -47,9 +52,9 @@ export async function inviteMember(actorId: string, raw: unknown) {
     await audit(tx, actor, "Member invited", `${input.role} invitation created.`, restaurant.id);
     return created;
   });
-  return deliverInvitation(invitation.id, secret.token);
+  return deliverInvitation(invitation.id, secret.token, onFailure);
 }
-export async function resendInvitation(actorId: string, invitationId: string) {
+export async function resendInvitation(actorId: string, invitationId: string, onFailure?: DeliveryFailureReporter) {
   await limitSubmission("invite", actorId, 20, 300);
   const secret = newInvitationToken();
   await transaction(async (tx) => {
@@ -61,7 +66,7 @@ export async function resendInvitation(actorId: string, invitationId: string) {
     await tx.invitation.update({ where: { id: invite.id }, data: { tokenHash: secret.tokenHash, expiresAt: secret.expiresAt, deliveryStatus: "PENDING", lastSentAt: new Date() } });
     await audit(tx, actor, "Invitation reissued", "The previous invitation link is no longer valid.", invite.restaurantId);
   });
-  return deliverInvitation(invitationId, secret.token);
+  return deliverInvitation(invitationId, secret.token, onFailure);
 }
 export async function revokeInvitation(actorId: string, invitationId: string) {
   await transaction(async (tx) => {

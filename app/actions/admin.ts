@@ -19,9 +19,10 @@ async function mutate(form: FormData, work: (actorId: string, input: Record<stri
 export async function createRestaurant(_: ActionState, form: FormData) {
   const actor = await requireAdmin();
   return actionResult(async () => {
-    const result = await service.createRestaurant(actor.id, Object.fromEntries(form));
+    let failureMessage: string | undefined;
+    const result = await service.createRestaurant(actor.id, Object.fromEntries(form), failure => { failureMessage = failure.message; });
     revalidatePath("/admin", "layout");
-    return { success: true, message: result.delivered ? "Restaurant created. Owner invitation email submitted." : "Restaurant created. Invitation submission could not be confirmed; check Resend configuration and logs, then retry from restaurant details.", redirectTo: `/admin/restaurants/${result.id}` };
+    return { success: true, message: result.delivered ? "Restaurant created. Owner invitation email submitted." : `Restaurant created and invitation saved. ${failureMessage ?? "Submission could not be confirmed; check Resend logs before retrying."}`, redirectTo: `/admin/restaurants/${result.id}` };
   });
 }
 export async function updateRestaurant(_: ActionState, form: FormData) { return mutate(form, service.updateRestaurant); }
@@ -45,16 +46,18 @@ export async function revokeInvitation(_: ActionState, form: FormData) { return 
 export async function inviteMember(_: ActionState, form: FormData) {
   const actor = await requireAdmin();
   return actionResult(async () => {
-    const delivered = await invitations.inviteMember(actor.id, Object.fromEntries(form));
+    let failureMessage: string | undefined;
+    const delivered = await invitations.inviteMember(actor.id, Object.fromEntries(form), failure => { failureMessage = failure.message; });
     revalidatePath("/admin", "layout");
-    return { success: true, message: delivered ? "Invitation email submitted." : "Invitation saved, but email submission could not be confirmed. Check Resend configuration and logs before using Retry delivery." };
+    return { success: true, message: delivered ? "Invitation email submitted." : `Invitation saved. ${failureMessage ?? "Submission could not be confirmed. Check Resend logs before using Retry delivery."}` };
   });
 }
 export async function resendInvitation(_: ActionState, form: FormData) {
   const actor = await requireAdmin();
   return actionResult(async () => {
-    const delivered = await invitations.resendInvitation(actor.id, id.parse(form.get("invitationId")));
+    let failureMessage: string | undefined;
+    const delivered = await invitations.resendInvitation(actor.id, id.parse(form.get("invitationId")), failure => { failureMessage = failure.message; });
     revalidatePath("/admin", "layout");
-    return { success: delivered, message: delivered ? "New invitation email submitted. The previous link is invalid." : "Email submission could not be confirmed. Check Resend configuration and logs before retrying." };
+    return { success: delivered, message: delivered ? "New invitation email submitted. The previous link is invalid." : `The invitation remains saved. ${failureMessage ?? "Submission could not be confirmed. Check Resend logs before retrying."}` };
   });
 }

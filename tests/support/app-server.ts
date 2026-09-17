@@ -39,7 +39,7 @@ export async function startIsolatedApp() {
     const origin = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", pathToFileURL(resolve("tests/support/mail-capture.mjs")).href, resolve("node_modules/next/dist/bin/next"), "start", "-p", String(port), "--hostname", "127.0.0.1"], {
       stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
-      env: { ...process.env, DATABASE_URL: fixture.url, APP_URL: origin, BETTER_AUTH_URL: origin, BETTER_AUTH_SECRET: randomBytes(32).toString("hex"), RESEND_API_KEY: "disposable-test-key", RESEND_FROM_EMAIL: "QA <sender@example.test>", ADMIN_EMAIL: "admin@example.test", EMAIL_FROM: "", POS_TEST_MAIL_CAPTURE: "1", NODE_ENV: "production" },
+      env: { ...process.env, DATABASE_URL: fixture.url, APP_URL: origin, BETTER_AUTH_URL: origin, BETTER_AUTH_SECRET: randomBytes(32).toString("hex"), RESEND_API_KEY: "disposable-test-key", RESEND_FROM_EMAIL: "QA <sender@example.test>", ADMIN_EMAIL: "admin@example.test", RESEND_TEST_EMAIL: "manual-test-only@example.test", EMAIL_FROM: "", POS_TEST_MAIL_CAPTURE: "1", NODE_ENV: "production" },
     });
     exit = new Promise<void>(resolveExit => { child!.once("exit", () => resolveExit()); child!.once("error", () => resolveExit()); });
     let output = "";

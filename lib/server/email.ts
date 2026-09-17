@@ -9,7 +9,8 @@ import type { EmailMessage } from "./email-templates";
 export async function sendEmail(to: string, message: EmailMessage, idempotencyKey?: string) {
   const { key, from, replyTo } = emailConfiguration();
   const recipient = emailAddress.safeParse(to);
-  if (!recipient.success || !message.subject || /[\r\n]/.test(message.subject)) throw new EmailDeliveryError("invalid_message");
+  if (!recipient.success) throw new EmailDeliveryError("invalid_recipient");
+  if (!message.subject || /[\r\n]/.test(message.subject)) throw new EmailDeliveryError("invalid_message");
   let response: Response;
   try {
     response = await fetch("https://api.resend.com/emails", {
@@ -25,7 +26,18 @@ export async function sendEmail(to: string, message: EmailMessage, idempotencyKe
     throw new EmailDeliveryError("uncertain");
   }
   if (!response.ok) {
-    const code = response.status === 401 ? "authentication" : response.status === 403 || response.status === 422 ? "sender_or_recipient" : response.status === 429 ? "rate_limit" : "provider";
+    // Provider text is inspected only to select a fixed, safe diagnostic. Never
+    // return/log the raw body: it can contain addresses or sensitive input.
+    const parsed = z.object({ name: z.string().optional(), message: z.string().optional() }).safeParse(await response.json().catch(() => null));
+    const name = parsed.success ? parsed.data.name ?? "" : "";
+    const detail = parsed.success ? parsed.data.message ?? "" : "";
+    const code = response.status === 401 || ["invalid_api_key", "restricted_api_key", "suspended_api_key", "invalid_permission"].includes(name) || /invalid api key|api key is invalid/i.test(detail) ? "authentication"
+      : /only send testing emails|own email address/i.test(detail) ? "recipient_restriction"
+      : /domain.*not verified|verify.*domain|unverified.*domain/i.test(detail) ? "unverified_domain"
+      : name === "invalid_from_address" ? "invalid_sender"
+      : /recipient|\bto\b.*(?:invalid|email)|invalid.*\bto\b/i.test(detail) ? "invalid_recipient"
+      : response.status === 429 || /quota|rate_limit/.test(name) ? "rate_limit"
+      : response.status === 403 || response.status === 422 ? "sender_or_recipient" : "provider";
     throw new EmailDeliveryError(code);
   }
   const accepted = z.object({ id: z.string().uuid() }).safeParse(await response.json().catch(() => null));

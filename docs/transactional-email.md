@@ -199,3 +199,122 @@ environment files were changed. Existing invitation/tenant tests were retained.
 Provider references: [Resend sender restrictions](https://resend.com/docs/knowledge-base/403-error-resend-dev-domain),
 [Resend idempotency](https://resend.com/docs/dashboard/emails/idempotency-keys),
 [Better Auth verification storage](https://better-auth.com/docs/reference/options).
+
+## Owner invitation audit (2026-09-17)
+
+The existing owner flow was connected; this audit repaired diagnostics and recovery
+UX without replacing authentication, invitations, membership or email transport.
+
+### Verified call path and identity
+
+- `RestaurantForm` -> `app/actions/admin.ts::createRestaurant` ->
+  `lib/server/admin-service.ts::createRestaurant` -> transaction creating the pending
+  restaurant, OWNER invitation and audit -> `deliverInvitation` -> `sendEmail` ->
+  Resend `POST /emails`.
+- For an existing pending restaurant with no owner, `RestaurantInvitations` ->
+  `app/actions/admin.ts::inviteMember` -> `lib/server/invitations.ts::inviteMember`
+  creates the same invitation and uses the same delivery path.
+- Resend receives `to: [Invitation.email]`. Business email, `ADMIN_EMAIL` and
+  `RESEND_TEST_EMAIL` never replace it. `ADMIN_EMAIL` is only optional Reply-To.
+- The link is `APP_URL` + `/accept-invitation?token=<raw-token>`, with validated
+  `BETTER_AUTH_URL` fallback. No service-hardcoded localhost is needed. Templates
+  contain POS-SYSTEM branding, restaurant name, invited email, owner/staff role,
+  expiration and an acceptance CTA, with no password, token hash or API key.
+- A token uses 32 random bytes and a unique stored SHA-256 hash, expires after
+  72 hours, and is consumed transactionally. Invalid, expired, revoked and already
+  accepted links cannot establish membership.
+- New users create credentials and accept together, then sign in. Passwords use
+  Better Auth hashing. Existing users must authenticate as the invited identity;
+  no duplicate account is created. A different signed-in identity is rejected.
+- Tenant checks reload the active, verified identity and active membership for
+  the requested restaurant, enforcing role and restaurant lifecycle. Legitimate
+  memberships in other restaurants remain intact. Invitation acceptance grants
+  no platform-admin privilege. Pending owners can prepare their restaurant; admin
+  activation remains separate.
+
+### Confirmed defects fixed
+
+1. Resend failures previously collapsed into generic diagnostics, and invitation
+   delivery discarded their category. The transport now classifies safe static
+   messages for missing/invalid keys, invalid addresses, testing-recipient limits,
+   unverified domains, provider errors, quotas and uncertain network outcomes.
+   Admin create/invite/retry actions expose those static explanations. Server logs
+   contain only safe categories, never raw provider bodies or secret values.
+2. A database failure while saving submission status could escape after restaurant
+   creation had committed. Delivery now preserves the saved result and reports
+   uncertainty, including when its failure-status write also fails.
+3. The wrong-account switch sent new invitees to login even when they needed to
+   create an account. It now returns to the acceptance/setup route after logout.
+4. Suspended restaurants displayed sending controls despite server rejection.
+   Those controls now match server eligibility; pending invitations remain
+   revocable while suspended.
+
+Pending means not accepted/revoked; expiration is derived separately. Email status
+is independent: PENDING is awaiting submission confirmation, SENT is provider
+acceptance, and FAILED is submission unconfirmed, not proof of non-delivery.
+Accepted and revoked links are unusable. Retry keeps the invitation row and email,
+rotates its token, renews expiry, enforces a 60-second cooldown and the existing
+20-per-300-second actor limit. After revocation use **Send invitation** to create
+a fresh OWNER invitation; the revoked record/link remains invalid.
+
+### Audit changes and test coverage
+
+Source files modified: `app/actions/admin.ts`,
+`components/admin/restaurant-management.tsx`, `components/auth/invitation-form.tsx`,
+`lib/server/admin-service.ts`, `lib/server/email-config.ts`, `lib/server/email.ts`,
+and `lib/server/invitations.ts`.
+
+Tests modified: `tests/email.test.ts`, `tests/onboarding.test.ts`,
+`tests/http.e2e.ts`, `tests/support/app-server.ts`, and
+`tests/support/mail-capture.mjs`. This document was also updated. No new files,
+dependencies, migrations, environment changes or manual-test-script changes.
+
+New cases exercise safe provider diagnostics, post-commit status-write failure,
+mocked testing-recipient rejection followed by successful recovery, the emailed
+link through brand-new credential creation/login/tenant access, wrong-account
+rejection, token hashes and reuse, explicit separation from a configured test
+recipient, and fresh/retried links after revocation/expiry. Existing identity,
+authorization, concurrency, cooldown and business-email independence tests remain.
+
+Final audit validation: `npm test` passed 52 tests; `npm run test:http` passed
+22 tests; `npm run lint` and `npm run build` passed. The existing parent-directory
+package-lock warning remains. Automated failures labelled `missing_api_key` are
+intentional isolated fixtures, not a diagnosis of the real local configuration.
+`npm run test:resend` remains unchanged and was not executed.
+
+### Local acceptance checklist and remaining limits
+
+1. Restart `npm run dev`. Check privately that `APP_URL` and `BETTER_AUTH_URL` match
+   `http://localhost:3000`, or your actual local origin, and that the sender is
+   appropriate for your Resend account. Never put the key in browser code or chat.
+2. Open `http://localhost:3000/admin/restaurants/create`, enter an owner email you
+   control, and submit once. With `onboarding@resend.dev`, use the actual Resend
+   account email for a real inbox test. Use a different business contact email.
+3. Inspect the saved invitation and Resend dashboard, then the owner inbox/spam.
+   If rejected, preserve that owner email; correct configuration before retrying.
+4. Open the latest emailed URL on the computer running the app. Use an incognito
+   window for a brand-new owner. Set a name/password, accept, then sign in. Existing
+   users should choose **Sign in to accept**. For a wrong account, choose **Use a
+   different account** and follow the matching setup/sign-in path.
+5. Check `/workspace`, the assigned restaurant and settings. Another tenant and
+   `/admin` must remain inaccessible unless separately authorized. Activate the
+   pending restaurant in Admin when ready. Confirm the used link cannot be reused.
+6. On another pending invitation, wait one minute and retry. Only the newest link
+   should work. Revoke it, verify rejection, and use **Send invitation** with role
+   Owner for a replacement if that restaurant still has no accepted owner.
+
+Testing-sender rejection is an external Resend configuration restriction, not a
+reason to reroute to `RESEND_TEST_EMAIL`. No actual failing request was submitted
+in this audit, so the cause of any particular live rejection still needs its safe
+diagnostic or Resend dashboard record. Verified-domain sending requires changing
+`RESEND_FROM_EMAIL` to that domain and ensuring the key has sending permission;
+recipient logic does not change. Deployment also needs matching HTTPS application
+origins. Another device's localhost does not point to this development machine.
+
+Automated HTTP tests exercise real production routes/actions with mocked email,
+not real inbox delivery or a hydrated-browser click on the account-switch button.
+POS, menu, orders and revenue features do not exist yet; their tenant boundaries
+cannot be claimed as tested. Production durability still lacks an outbox/worker,
+provider-ID persistence and signed delivery/bounce webhooks. Safe failure categories
+are returned to Admin and logged, but not persisted per invitation. If status writes
+fail, the saved invitation can remain in the awaiting-submission state until retry.

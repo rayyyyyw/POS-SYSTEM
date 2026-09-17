@@ -3,11 +3,11 @@ import { z } from "zod";
 import { createRestaurantInput, updateRestaurantInput, lifecycleInput, settingsInput, id, name } from "@/lib/validation/admin";
 import { assertTransition, assertOwnerMutation, DomainError } from "@/lib/domain/policies";
 import { transaction, assertAdmin, audit } from "./transaction";
-import { deliverInvitation, newInvitationToken } from "./invitations";
+import { deliverInvitation, newInvitationToken, type DeliveryFailureReporter } from "./invitations";
 import { sendEmail } from "./email";
 import { ownershipChangedEmail } from "./email-templates";
 
-export async function createRestaurant(actorId: string, raw: unknown) {
+export async function createRestaurant(actorId: string, raw: unknown, onDeliveryFailure?: DeliveryFailureReporter) {
   const input = createRestaurantInput.parse(raw);
   const secret = newInvitationToken();
   const created = await transaction(async (tx) => {
@@ -19,7 +19,7 @@ export async function createRestaurant(actorId: string, raw: unknown) {
     await audit(tx, actor, "Restaurant created", "Pending restaurant created with an initial owner invitation.", restaurant.id);
     return { id: restaurant.id, invitationId: invite.id };
   });
-  const delivered = await deliverInvitation(created.invitationId, secret.token);
+  const delivered = await deliverInvitation(created.invitationId, secret.token, onDeliveryFailure);
   return { ...created, delivered };
 }
 export async function updateRestaurant(actorId: string, raw: unknown) {
